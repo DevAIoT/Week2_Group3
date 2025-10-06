@@ -58,7 +58,9 @@ Basic steps (on the Raspberry Pi itself):
 ```bash
 sudo apt update
 sudo apt full-upgrade -y
-# install picamera2 and libcamera support (package names depend on OS version)
+# Install libcap-dev (needed for python-prctl dependency)
+sudo apt install -y libcap-dev
+# Install picamera2 and libcamera support (package names depend on OS version)
 sudo apt install -y python3-picamera2 python3-opencv libcamera-apps
 ```
 
@@ -80,6 +82,8 @@ Notes and troubleshooting
 - If `from picamera2 import Picamera2` fails, install `picamera2` via your OS package manager or follow the Raspberry Pi Camera documentation for your OS image.
 - If you see color issues (frame looks blue/tinted), let me know — some picamera2 versions return BGR instead of RGB and we can add a conversion.
 - `mediapipe` installation on Pi can be the most painful part. If pip install fails, tell me the Pi model and OS (32-bit vs 64-bit) and I can provide precise instructions or a prebuilt wheel suggestion.
+- If pip install of picamera2 fails with "libcap development headers" error, install `libcap-dev` first as shown above, or use the OS package instead of pip (recommended for Pi).
+- **Recommended**: Use the OS package for picamera2 (`sudo apt install python3-picamera2`) instead of pip to avoid build issues.
 
 If you'd like, I can expand this README with tested step-by-step Pi instructions for your specific Pi model.
 
