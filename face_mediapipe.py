@@ -43,6 +43,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--height", type=int, default=480, help="Camera height")
     parser.add_argument("--min-confidence", type=float, default=0.5,
                         help="Minimum detection confidence (0-1)")
+    parser.add_argument("--use-picamera", action="store_true",
+                        help="Use the Raspberry Pi CSI camera via picamera2 (ignores --src)")
     parser.add_argument("--no-display", action="store_true", help="Run headless (no GUI display)")
     return parser.parse_args()
 
@@ -70,7 +72,31 @@ def get_capture(src: str, width: int, height: int) -> cv2.VideoCapture:
 def main() -> int:
     args = parse_args()
 
-    cap = get_capture(args.src, args.width, args.height)
+    picam = None
+    cap = None
+
+    # Initialize capture: either Picamera2 (CSI) or OpenCV VideoCapture
+    if args.use_picamera:
+        try:
+            from picamera2 import Picamera2
+        except Exception:
+            print("picamera2 is required to use the Raspberry Pi camera. Install it using your OS package manager and the picamera2 package.")
+            raise
+
+        picam = Picamera2()
+        # create a simple preview configuration (size may be adjusted by driver)
+        try:
+            config = picam.create_preview_configuration({'main': {'size': (args.width, args.height)}})
+        except Exception:
+            # fallback to empty/default config if API differs
+            config = None
+        if config is not None:
+            picam.configure(config)
+        else:
+            picam.configure(picam.create_preview_configuration({}))
+        picam.start()
+    else:
+        cap = get_capture(args.src, args.width, args.height)
 
     # Choose model
     if args.model == "detection":
@@ -88,13 +114,22 @@ def main() -> int:
     prev_time = time.time()
     try:
         while True:
-            ret, frame = cap.read()
-            if not ret:
-                print("End of stream or cannot read frame")
-                break
-
-            # For performance on Pi, you may want to reduce frame size here
-            image = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            # Capture frame from the selected source
+            if picam is not None:
+                # picamera2 returns an RGB numpy array
+                frame = picam.capture_array()
+                if frame is None:
+                    print("Could not capture frame from picamera2")
+                    break
+                # assume frame is RGB
+                image = frame.copy()
+            else:
+                ret, frame = cap.read()
+                if not ret:
+                    print("End of stream or cannot read frame")
+                    break
+                # For performance on Pi, you may want to reduce frame size here
+                image = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
             image.flags.writeable = False
 
             if face_detector is not None:
@@ -148,7 +183,13 @@ def main() -> int:
     except KeyboardInterrupt:
         print("Interrupted by user")
     finally:
-        cap.release()
+        if cap is not None:
+            cap.release()
+        if picam is not None:
+            try:
+                picam.stop()
+            except Exception:
+                pass
         if not args.no_display:
             cv2.destroyAllWindows()
         if face_detector is not None:
