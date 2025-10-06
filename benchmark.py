@@ -1,7 +1,8 @@
-import tflite_runtime.interpreter as tflite
 import numpy as np
 import tensorflow as tf
 import time, os
+
+from tensorflow.lite.python.interpreter import Interpreter as TFLiteInterpreter
 
 # Load test set
 (_, _), (x_test, y_test) = tf.keras.datasets.mnist.load_data()
@@ -9,7 +10,7 @@ x_test = (x_test / 255.0).astype(np.float32)
 
 def benchmark_model(model_path, int8=False, n_samples=1000):
     print(f"\n--- Benchmarking {os.path.basename(model_path)} ---")
-    intr = tflite.Interpreter(model_path=model_path)
+    intr = TFLiteInterpreter(model_path=model_path)
     intr.allocate_tensors()
 
     in_det  = intr.get_input_details()[0]
