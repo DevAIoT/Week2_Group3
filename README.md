@@ -44,24 +44,24 @@ Controls
 - Press `s` to save a snapshot (files named `snapshot_<timestamp>.jpg`)
 
 Raspberry Pi notes
-- `mediapipe` and `opencv-python` may be difficult to install on some Pi OS images. If you plan to run on a Raspberry Pi camera module, I can update the script to optionally use `picamera2`/libcamera for better performance — tell me your Pi model and OS if you'd like that.
+- `mediapipe` and `opencv-python` may be difficult to install on some Pi OS images. If you plan to run on a Raspberry Pi camera module, the script supports `libcamera` for better performance.
 
 Using the Raspberry Pi camera (CSI)
 ----------------------------------
 
-This repository supports the Raspberry Pi Camera Module (connected to the CSI pins) via `picamera2`.
+This repository supports the Raspberry Pi Camera Module (connected to the CSI pins) via `libcamera` Python bindings.
 
 Basic steps (on the Raspberry Pi itself):
 
-1. Update OS packages and install picamera2 / libcamera (example for Raspberry Pi OS Bookworm/Bullseye):
+1. Update OS packages and install libcamera / python bindings (example for Raspberry Pi OS Bookworm/Bullseye):
 
 ```bash
 sudo apt update
 sudo apt full-upgrade -y
-# Install libcap-dev (needed for python-prctl dependency)
+# Install libcap-dev (needed for python-prctl dependency if using pip)
 sudo apt install -y libcap-dev
-# Install picamera2 and libcamera support (package names depend on OS version)
-sudo apt install -y python3-picamera2 python3-opencv libcamera-apps
+# Install libcamera, python bindings, and OpenCV
+sudo apt install -y python3-libcamera python3-opencv libcamera-apps
 ```
 
 2. Install Python packages in your virtualenv (or system Python):
@@ -72,18 +72,19 @@ pip install mediapipe opencv-python
 # Note: on some Pi images mediapipe may need a prebuilt wheel or platform-specific install.
 ```
 
-3. Run the demo using the Pi camera (script will use picamera2 when `--use-picamera` is passed):
+3. Run the demo using the Pi camera (script will use libcamera when `--use-picamera` is passed):
 
 ```bash
 python face_mediapipe.py --use-picamera --model mesh
 ```
 
 Notes and troubleshooting
-- If `from picamera2 import Picamera2` fails, install `picamera2` via your OS package manager or follow the Raspberry Pi Camera documentation for your OS image.
-- If you see color issues (frame looks blue/tinted), let me know — some picamera2 versions return BGR instead of RGB and we can add a conversion.
+- If `from libcamera import CameraManager` fails, install `python3-libcamera` as shown above.
+- If you get "No module named 'libcamera'" error, install `python3-libcamera` as shown above.
+- If you see color issues (frame looks blue/tinted), let me know — libcamera may return BGR instead of RGB and we can add a conversion.
 - `mediapipe` installation on Pi can be the most painful part. If pip install fails, tell me the Pi model and OS (32-bit vs 64-bit) and I can provide precise instructions or a prebuilt wheel suggestion.
-- If pip install of picamera2 fails with "libcap development headers" error, install `libcap-dev` first as shown above, or use the OS package instead of pip (recommended for Pi).
-- **Recommended**: Use the OS package for picamera2 (`sudo apt install python3-picamera2`) instead of pip to avoid build issues.
+- If pip install of packages fails with "libcap development headers" error, install `libcap-dev` first as shown above, or use the OS packages instead of pip (recommended for Pi).
+- **Recommended**: Use the OS packages for libcamera (`sudo apt install python3-libcamera`) instead of pip to avoid build issues.
 
 If you'd like, I can expand this README with tested step-by-step Pi instructions for your specific Pi model.
 
