@@ -39,9 +39,8 @@ mp_face_mesh = mp.solutions.face_mesh
 
 
 def extract_face_features(landmarks) -> np.ndarray:
-    """Extract rotation-invariant features from face mesh landmarks for recognition.
-    Uses 42 comprehensive landmarks covering all major facial features.
-    Rotation-invariant by using distances and ratios instead of absolute positions."""
+    """Extract features from face mesh landmarks for recognition.
+    Uses 42 comprehensive landmarks covering all major facial features."""
     points = []
     for landmark in landmarks.landmark:
         points.append([landmark.x, landmark.y, landmark.z])
@@ -102,119 +101,75 @@ def extract_face_features(landmarks) -> np.ndarray:
         397,    # Jaw right
     ]
 
-    # Define reference points for face coordinate system
-    nose_tip = points[1]
-    left_eye = points[33]
-    right_eye = points[263]
-    
-    # Create rotation-invariant coordinate system
-    # Use eye-to-eye vector as X-axis reference
-    eye_vector = right_eye - left_eye
-    eye_distance = np.linalg.norm(eye_vector)
-    
-    # Normalize by eye distance to make scale-invariant
-    if eye_distance == 0:
-        eye_distance = 1.0  # Avoid division by zero
-    
     features = []
-    
-    # ROTATION-INVARIANT APPROACH: Use distances between key points
-    # Instead of relative positions, use pairwise distances normalized by eye distance
-    
-    # Calculate distances from nose tip to all other key points (normalized)
+    nose_tip = points[1]
+
+    # Calculate relative positions to nose tip for all key points
     for idx in key_points:
         if idx != 1:  # Skip nose tip itself
             point = points[idx]
-            distance = np.linalg.norm(point - nose_tip) / eye_distance
-            features.append(distance)
+            features.extend([
+                point[0] - nose_tip[0],
+                point[1] - nose_tip[1],
+                point[2] - nose_tip[2],
+            ])
+
+    # Add comprehensive facial proportions (10 measurements)
     
-    # Add pairwise distances between important facial features (normalized)
-    # These are rotation-invariant geometric measurements
-    
-    # Eye measurements (normalized by eye distance)
-    left_eye_center = points[145]
-    right_eye_center = points[374]
-    eyes_to_nose = np.linalg.norm(left_eye_center - nose_tip) / eye_distance
-    features.append(eyes_to_nose)
-    
-    # Mouth measurements
+    # 1. Eye distance
+    left_eye_outer = points[33]
+    right_eye_outer = points[263]
+    eye_distance = np.linalg.norm(left_eye_outer - right_eye_outer)
+    features.append(eye_distance)
+
+    # 2. Mouth width
     mouth_left = points[61]
     mouth_right = points[291]
-    mouth_center = (mouth_left + mouth_right) / 2
-    mouth_to_nose = np.linalg.norm(mouth_center - nose_tip) / eye_distance
-    features.append(mouth_to_nose)
-
-    # Add comprehensive RATIOS and normalized distances (rotation-invariant)
-    # All measurements normalized by eye distance for scale invariance
-    
-    # 1. Mouth width ratio (normalized by eye distance)
-    mouth_width = np.linalg.norm(mouth_right - mouth_left) / eye_distance
+    mouth_width = np.linalg.norm(mouth_left - mouth_right)
     features.append(mouth_width)
+
+    # 3. Eye to mouth distance
+    left_eye_center = (points[33] + points[263]) / 2
+    mouth_center = (points[61] + points[291]) / 2
+    eye_to_mouth_distance = np.linalg.norm(left_eye_center - mouth_center)
+    features.append(eye_to_mouth_distance)
     
-    # 2. Eye-to-mouth vertical distance ratio
-    eye_center = (left_eye + right_eye) / 2
-    eye_mouth_distance = np.linalg.norm(eye_center - mouth_center) / eye_distance
-    features.append(eye_mouth_distance)
+    # 4. Face width (cheek to cheek)
+    face_width = np.linalg.norm(points[234] - points[454])
+    features.append(face_width)
     
-    # 3. Face width ratio (cheek to cheek / eye distance)
+    # 5. Face height (forehead to chin)
+    face_height = np.linalg.norm(points[10] - points[152])
+    features.append(face_height)
+    
+    # 6. Nose length (bridge to tip)
+    nose_length = np.linalg.norm(points[0] - points[1])
+    features.append(nose_length)
+    
+    # 7. Left eye height
+    left_eye_height = np.linalg.norm(points[160] - points[144])
+    features.append(left_eye_height)
+    
+    # 8. Right eye height
+    right_eye_height = np.linalg.norm(points[387] - points[373])
+    features.append(right_eye_height)
+    
+    # 9. Eyebrow distance (left to right)
+    eyebrow_distance = np.linalg.norm(points[70] - points[300])
+    features.append(eyebrow_distance)
+    
+    # 10. Mouth height (upper to lower lip)
+    mouth_height = np.linalg.norm(points[13] - points[14])
+    features.append(mouth_height)
+
+    chin = points[199]
+    nose_to_chin_distance = np.linalg.norm(nose_tip - chin)
+    features.append(nose_to_chin_distance)
+
     left_cheek = points[234]
     right_cheek = points[454]
-    face_width_ratio = np.linalg.norm(left_cheek - right_cheek) / eye_distance
-    features.append(face_width_ratio)
-    
-    # 4. Face height ratio (forehead to chin / eye distance)
-    forehead = points[10]
-    chin = points[152]
-    face_height_ratio = np.linalg.norm(forehead - chin) / eye_distance
-    features.append(face_height_ratio)
-    
-    # 5. Nose length ratio (bridge to tip / eye distance)
-    nose_bridge = points[0]
-    nose_length_ratio = np.linalg.norm(nose_bridge - nose_tip) / eye_distance
-    features.append(nose_length_ratio)
-    
-    # 6. Left eye height ratio
-    left_eye_height_ratio = np.linalg.norm(points[160] - points[144]) / eye_distance
-    features.append(left_eye_height_ratio)
-    
-    # 7. Right eye height ratio
-    right_eye_height_ratio = np.linalg.norm(points[387] - points[373]) / eye_distance
-    features.append(right_eye_height_ratio)
-    
-    # 8. Eyebrow span ratio
-    left_eyebrow = points[70]
-    right_eyebrow = points[300]
-    eyebrow_span_ratio = np.linalg.norm(left_eyebrow - right_eyebrow) / eye_distance
-    features.append(eyebrow_span_ratio)
-    
-    # 9. Mouth height ratio (upper to lower lip / eye distance)
-    upper_lip = points[13]
-    lower_lip = points[14]
-    mouth_height_ratio = np.linalg.norm(upper_lip - lower_lip) / eye_distance
-    features.append(mouth_height_ratio)
-    
-    # 10. Nose-to-chin ratio
-    nose_chin_ratio = np.linalg.norm(nose_tip - chin) / eye_distance
-    features.append(nose_chin_ratio)
-    
-    # 11. Face aspect ratio (height / width)
     face_width = np.linalg.norm(left_cheek - right_cheek)
-    face_height = np.linalg.norm(forehead - chin)
-    if face_width > 0:
-        aspect_ratio = face_height / face_width
-    else:
-        aspect_ratio = 1.0
-    features.append(aspect_ratio)
-    
-    # 12. Eye separation ratio (inner to outer distance)
-    left_eye_inner = points[133]
-    left_eye_outer = points[33]
-    right_eye_inner = points[362]
-    right_eye_outer = points[263]
-    left_eye_width = np.linalg.norm(left_eye_outer - left_eye_inner) / eye_distance
-    right_eye_width = np.linalg.norm(right_eye_outer - right_eye_inner) / eye_distance
-    features.append(left_eye_width)
-    features.append(right_eye_width)
+    features.append(face_width)
 
     features = np.array(features)
 
@@ -304,182 +259,6 @@ def add_face_to_database(name: str, features: np.ndarray, known_faces: Dict[str,
         known_faces[name] = []
     known_faces[name].append(features)
     print(f"Added face for {name}. Total faces for {name}: {len(known_faces[name])}")
-
-
-def auto_dataset_collector(cap, face_mesher, known_faces: Dict[str, List[np.ndarray]], 
-                           name: str, duration: int = 15) -> bool:
-    """
-    Automatically collect face samples while user moves their head naturally.
-    
-    Args:
-        cap: Camera capture object
-        face_mesher: MediaPipe face mesh detector
-        known_faces: Dictionary to store collected samples
-        name: Person's name for the dataset
-        duration: Duration in seconds to collect samples (default 15)
-    
-    Returns:
-        bool: True if collection was successful, False if cancelled
-    """
-    collected_samples = []
-    frame_interval = 10  # Capture every 10 frames (~0.3 seconds at 30fps)
-    frame_count = 0
-    
-    start_time = time.time()
-    last_capture_time = 0
-    
-    print("\n" + "="*70)
-    print("🤖 AUTOMATIC DATASET COLLECTOR")
-    print("="*70)
-    print(f"   Collecting samples for: {name}")
-    print(f"   Duration: {duration} seconds")
-    print(f"   Move your head around naturally!")
-    print(f"   Press 'ESC' to cancel at any time")
-    print("="*70 + "\n")
-    
-    window_name = "Auto Dataset Collector"
-    cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
-    cv2.resizeWindow(window_name, 800, 600)
-    
-    while True:
-        # Check if time is up
-        elapsed_time = time.time() - start_time
-        if elapsed_time >= duration:
-            break
-        
-        ret, frame = cap.read()
-        if not ret:
-            print("✗ Camera error")
-            return False
-        
-        frame_count += 1
-        
-        # Process frame
-        image = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-        image.flags.writeable = False
-        results = face_mesher.process(image)
-        image.flags.writeable = True
-        image = cv2.cvtColor(image, cv2.COLOR_RGB2BGR)
-        
-        height, width = image.shape[:2]
-        
-        # Draw face mesh if detected
-        face_detected = False
-        current_features = None
-        
-        if results.multi_face_landmarks:
-            face_detected = True
-            face_landmarks = results.multi_face_landmarks[0]
-            
-            # Draw landmarks
-            mp_drawing.draw_landmarks(
-                image=image,
-                landmark_list=face_landmarks,
-                connections=mp_face_mesh.FACEMESH_TESSELATION,
-                landmark_drawing_spec=None,
-                connection_drawing_spec=mp_drawing_styles.get_default_face_mesh_tesselation_style()
-            )
-            
-            # Extract features and capture every N frames
-            if frame_count % frame_interval == 0:
-                current_features = extract_face_features(face_landmarks)
-                collected_samples.append(current_features)
-                print(f"  ✓ Captured sample {len(collected_samples)} at {elapsed_time:.1f}s")
-        
-        # Calculate time remaining
-        time_remaining = int(duration - elapsed_time)
-        
-        # Overlay instructions
-        overlay = image.copy()
-        
-        # Top banner - dark background
-        cv2.rectangle(overlay, (0, 0), (width, 140), (0, 0, 0), -1)
-        image = cv2.addWeighted(overlay, 0.7, image, 0.3, 0)
-        
-        # Time progress bar
-        progress = elapsed_time / duration
-        bar_width = width - 40
-        bar_x = 20
-        bar_y = 20
-        bar_height = 30
-        
-        cv2.rectangle(image, (bar_x, bar_y), (bar_x + bar_width, bar_y + bar_height), (50, 50, 50), -1)
-        cv2.rectangle(image, (bar_x, bar_y), (bar_x + int(bar_width * progress), bar_y + bar_height), (0, 255, 0), -1)
-        cv2.rectangle(image, (bar_x, bar_y), (bar_x + bar_width, bar_y + bar_height), (255, 255, 255), 2)
-        
-        # Time text
-        time_text = f"Time: {int(elapsed_time)}s / {duration}s  |  Samples: {len(collected_samples)}"
-        cv2.putText(image, time_text, (bar_x + 5, bar_y + 22), 
-                   cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
-        
-        # Main instruction - large text
-        main_instruction = "Move your head around naturally!"
-        cv2.putText(image, main_instruction, (20, 75), 
-                   cv2.FONT_HERSHEY_DUPLEX, 1.1, (0, 255, 255), 2)
-        
-        # Sub instructions
-        sub_instructions = [
-            "• Turn left and right",
-            "• Look up and down", 
-            "• Try different expressions"
-        ]
-        y_pos = 110
-        for instruction in sub_instructions:
-            cv2.putText(image, instruction, (20, y_pos), 
-                       cv2.FONT_HERSHEY_SIMPLEX, 0.6, (200, 200, 200), 1)
-            y_pos += 25
-        
-        # Status message
-        if not face_detected:
-            status_color = (0, 0, 255)  # Red
-            status_text = "⚠ NO FACE DETECTED"
-        else:
-            status_color = (0, 255, 0)  # Green
-            status_text = f"✓ Face detected - Capturing every {frame_interval} frames"
-        
-        cv2.putText(image, status_text, (20, height - 50), 
-                   cv2.FONT_HERSHEY_SIMPLEX, 0.7, status_color, 2)
-        
-        # Bottom instruction
-        cv2.rectangle(image, (0, height - 40), (width, height), (0, 0, 0), -1)
-        cv2.putText(image, f"Time remaining: {time_remaining}s  |  Press ESC to cancel", (20, height - 12), 
-                   cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 1)
-        
-        cv2.imshow(window_name, image)
-        
-        key = cv2.waitKey(1) & 0xFF
-        if key == 27:  # ESC
-            print("\n✗ Collection cancelled by user")
-            cv2.destroyWindow(window_name)
-            return False
-    
-    # Collection complete
-    print("\n" + "="*70)
-    print("✓ COLLECTION COMPLETE!")
-    print("="*70)
-    
-    # Add all samples to database
-    if name not in known_faces:
-        known_faces[name] = []
-    known_faces[name].extend(collected_samples)
-    
-    print(f"✓ Added {len(collected_samples)} samples for {name}")
-    print(f"  Total samples for {name}: {len(known_faces[name])}")
-    print("="*70 + "\n")
-    
-    # Show success screen for 2 seconds
-    success_frame = np.zeros((600, 800, 3), dtype=np.uint8)
-    cv2.putText(success_frame, "DATASET COMPLETE!", (150, 250), 
-               cv2.FONT_HERSHEY_DUPLEX, 2, (0, 255, 0), 3)
-    cv2.putText(success_frame, f"{len(collected_samples)} samples collected for {name}", (180, 320), 
-               cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2)
-    cv2.putText(success_frame, "Returning to recognition mode...", (200, 380), 
-               cv2.FONT_HERSHEY_SIMPLEX, 0.8, (200, 200, 200), 1)
-    cv2.imshow(window_name, success_frame)
-    cv2.waitKey(2000)
-    
-    cv2.destroyWindow(window_name)
-    return True
 
 
 def clear_database(database_file: str = "known_faces.json"):
@@ -586,17 +365,16 @@ def main() -> int:
         return 1
 
     print("\n🎥 Starting video stream...")
-    print("="*70)
+    print("="*60)
     print("📋 KEYBOARD CONTROLS:")
     print("  'q' = Quit program")
     print("  's' = Save snapshot")
-    print("  'a' = 🤖 AUTO DATASET COLLECTOR (guided multi-pose capture)")
+    print("  'a' = Add current face to database")
     print("  'c' = Clear entire database")
-    print("="*70)
+    print("="*60)
     print("👀 IMPORTANT: Window will appear as 'Face Recognition - Camera 1'")
     print("   If window doesn't appear, check your taskbar or try Alt+Tab")
-    print("   The script will run continuously until you press 'q' to quit")
-    print("\n💡 TIP: Press 'a' to automatically collect 15+ samples with guided poses!\n")
+    print("   The script will run continuously until you press 'q' to quit\n")
 
     # Create window and set properties
     window_name = "Face Recognition - Camera 1"
@@ -733,36 +511,27 @@ def main() -> int:
                 cv2.imwrite(filename, image)
                 print(f"📷 Saved {filename}")
             elif key == ord("a"):
-                # Auto dataset collector mode
-                print("\n" + "="*70)
-                print("🤖 AUTOMATIC DATASET COLLECTOR")
-                print("="*70)
-                current_name = input("Enter name for dataset collection (or press Enter to cancel): ").strip()
-                if current_name:
-                    duration_input = input(f"How many seconds to record? (default 15, recommended 10-20): ").strip()
-                    try:
-                        duration = int(duration_input) if duration_input else 15
-                        duration = max(5, min(60, duration))  # Clamp between 5 and 60 seconds
-                    except ValueError:
-                        duration = 15
-                    
-                    print(f"\n🎯 Recording for {duration} seconds for: {current_name}")
-                    print("   Just move your head around naturally!")
-                    print("   The system will capture frames automatically\n")
-                    
-                    # Run auto collector
-                    success = auto_dataset_collector(cap, face_mesher, known_faces, current_name, duration)
-                    
-                    if success:
+                # Add new face mode
+                if results.multi_face_landmarks:
+                    print("\n" + "="*50)
+                    print("📝 ADD FACE MODE")
+                    print("="*50)
+                    current_name = input("Enter name for this face (or press Enter to cancel): ").strip()
+                    if current_name:
+                        features = extract_face_features(results.multi_face_landmarks[0])
+                        add_face_to_database(current_name, features, known_faces)
                         save_known_faces(known_faces)
-                        print("💾 Dataset saved successfully!")
+                        print(f"✓ Added {current_name} to database")
+                        print(f"  Total samples for {current_name}: {len(known_faces[current_name])}")
+                        if len(known_faces[current_name]) < 5:
+                            print(f"  TIP: Add {5 - len(known_faces[current_name])} more samples for better recognition")
+                            print("       Try different angles, expressions, and lighting")
+                        print("\n🎥 Resuming video stream...")
+                        print("="*50 + "\n")
                     else:
-                        print("⚠️  Dataset collection was cancelled or incomplete")
-                    
-                    print("\n🎥 Resuming video stream...")
-                    print("="*70 + "\n")
+                        print("✗ Cancelled - no name entered\n")
                 else:
-                    print("✗ Cancelled - no name entered\n")
+                    print("\n⚠ No face detected to add\n")
             elif key == ord("c"):
                 # Clear database
                 print("\n" + "="*50)
