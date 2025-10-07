@@ -4,11 +4,13 @@ Small demo that uses MediaPipe and OpenCV for face detection and face mesh.
 
 Files
 - `face_mediapipe.py` — main demo. Note: the script was renamed from `mediapipe.py` to avoid shadowing the installed `mediapipe` package.
+- `face_mesh_camera1.py` — standalone facial recognition script using camera 1 with face mesh features.
 
 Requirements
 - Python 3.8+
 - mediapipe
 - opencv-python
+- numpy (for facial recognition features)
 
 Install (recommended inside a virtual environment):
 
@@ -42,6 +44,41 @@ Options
 Controls
 - Press `q` to quit
 - Press `s` to save a snapshot (files named `snapshot_<timestamp>.jpg`)
+
+Facial Recognition
+------------------
+
+The `face_mesh_camera1.py` script includes facial recognition capabilities using MediaPipe face mesh landmarks.
+
+### Features:
+- Real-time face detection and landmark extraction
+- Facial recognition using geometric features from face mesh
+- Database of known faces stored in `known_faces.json`
+- Visual feedback with colored bounding boxes (green for known, red for unknown)
+- Confidence scores for recognition matches
+
+### Usage:
+```powershell
+python face_mesh_camera1.py
+```
+
+### Controls:
+- Press `q` to quit
+- Press `s` to save a snapshot
+- Press `a` to add a new face to the database (will prompt for name)
+- Press `c` to clear the entire database
+
+### Security Features:
+- **Advanced Feature Extraction**: Uses 14+ facial landmarks for detailed feature vectors
+- **Z-score Normalization**: Features are normalized for consistent comparison
+- **85% Similarity Threshold**: Strict matching requirements (upgraded from 60%)
+- **Multiple Facial Proportions**: Eye distance, mouth width, face shape ratios
+- **Distance-based Verification**: Euclidean distance with conservative thresholds
+
+### Database:
+- Known faces are stored in `known_faces.json` in the script directory
+- Each person can have multiple face samples for better recognition
+- Database is automatically loaded on startup and saved when adding new faces
 
 Raspberry Pi notes
 - `mediapipe` and `opencv-python` may be difficult to install on some Pi OS images. If you plan to run on a Raspberry Pi camera module, the script supports `libcamera` for better performance.
