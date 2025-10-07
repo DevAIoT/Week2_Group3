@@ -1,11 +1,3 @@
-def get_capture(src: int, width: int, height: int) -> cv2.VideoCapture:
-    """Open camera capture and check if available."""
-    cap = cv2.VideoCapture(src)
-    cap.set(cv2.CAP_PROP_FRAME_WIDTH, width)
-    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, height)
-    if not cap.isOpened():
-        raise RuntimeError(f"Could not open camera {src}. Try a different index (0, 1, 2, etc).")
-    return cap
 """
 Hand Detection with MediaPipe
 Detects if hand is open or closed using MediaPipe Hands
@@ -15,6 +7,15 @@ Closed hand = False (door closes)
 
 import cv2
 import mediapipe as mp
+
+def get_capture(src: int, width: int, height: int) -> cv2.VideoCapture:
+    """Open camera capture and check if available."""
+    cap = cv2.VideoCapture(src)
+    cap.set(cv2.CAP_PROP_FRAME_WIDTH, width)
+    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, height)
+    if not cap.isOpened():
+        raise RuntimeError(f"Could not open camera {src}. Try a different index (0, 1, 2, etc).")
+    return cap
 import math
 
 class HandDetector:
@@ -137,7 +138,7 @@ class HandDetector:
 def main():
     """Main function to run hand detection"""
     # Camera settings
-    camera_index = 0  # Use 0 for Raspberry Pi default camera
+    camera_index = 1  # Use 0 for Raspberry Pi default camera
     width = 1280
     height = 720
     # Initialize webcam with robust function
