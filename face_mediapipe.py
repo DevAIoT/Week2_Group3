@@ -26,8 +26,6 @@ except Exception:  # pragma: no cover - provides friendly message
     print("mediapipe is required. Install with: pip install mediapipe")
     raise
 
-import numpy as np
-
 
 mp_drawing = mp.solutions.drawing_utils
 mp_drawing_styles = mp.solutions.drawing_styles
@@ -46,7 +44,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--min-confidence", type=float, default=0.5,
                         help="Minimum detection confidence (0-1)")
     parser.add_argument("--use-picamera", action="store_true",
-                        help="Use the Raspberry Pi CSI camera via libcamera (ignores --src)")
+                        help="Use the Raspberry Pi CSI camera at /dev/video0 (ignores --src)")
     parser.add_argument("--no-display", action="store_true", help="Run headless (no GUI display)")
     return parser.parse_args()
 
@@ -77,28 +75,16 @@ def main() -> int:
     picam = None
     cap = None
 
-    # Initialize capture: either libcamera (CSI) or OpenCV VideoCapture
+    # Initialize capture: either Pi CSI camera (via OpenCV/libcamera) or USB webcam
     if args.use_picamera:
-        try:
-            from libcamera import CameraManager, Request, StreamRole
-        except Exception:
-            print("libcamera python bindings required. Install with: sudo apt install python3-libcamera")
-            raise
-
-        cm = CameraManager()
-        cameras = cm.get()
-        if not cameras:
-            raise RuntimeError("No cameras found")
-        camera = cameras[0]
-        camera.acquire()
-        config = camera.generate_configuration([StreamRole.Viewfinder])
-        stream_config = config.at(0)
-        stream_config.size.width = args.width
-        stream_config.size.height = args.height
-        camera.configure(config)
-        camera.start()
-        picam = camera  # reuse variable name for consistency
-        cap = None
+        # On Raspberry Pi with libcamera backend, /dev/video0 is the CSI camera
+        cap = cv2.VideoCapture('/dev/video0')
+        # Try to set resolution
+        cap.set(cv2.CAP_PROP_FRAME_WIDTH, args.width)
+        cap.set(cv2.CAP_PROP_FRAME_HEIGHT, args.height)
+        if not cap.isOpened():
+            raise RuntimeError("Could not open CSI camera at /dev/video0. Make sure libcamera is configured as OpenCV backend.")
+        picam = None
     else:
         cap = get_capture(args.src, args.width, args.height)
         picam = None
@@ -119,26 +105,13 @@ def main() -> int:
     prev_time = time.time()
     try:
         while True:
-            # Capture frame from the selected source
-            if picam is not None:
-                # libcamera synchronous capture
-                request = picam.create_request()
-                picam.queue_request(request)
-                # wait for completion
-                picam.wait()
-                # get the buffer
-                buffer = request.buffers[0]
-                fb = buffer[0]
-                data = fb.planes[0]
-                # assume RGB format
-                image = np.frombuffer(data, dtype=np.uint8).reshape((args.height, args.width, 3))
-            else:
-                ret, frame = cap.read()
-                if not ret:
-                    print("End of stream or cannot read frame")
-                    break
-                # For performance on Pi, you may want to reduce frame size here
-                image = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            # Capture frame
+            ret, frame = cap.read()
+            if not ret:
+                print("End of stream or cannot read frame")
+                break
+            # For performance on Pi, you may want to reduce frame size here
+            image = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
             image.flags.writeable = False
 
             if face_detector is not None:
@@ -194,12 +167,6 @@ def main() -> int:
     finally:
         if cap is not None:
             cap.release()
-        if picam is not None:
-            try:
-                picam.stop()
-                picam.release()
-            except Exception:
-                pass
         if not args.no_display:
             cv2.destroyAllWindows()
         if face_detector is not None:

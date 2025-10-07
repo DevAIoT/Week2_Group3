@@ -49,42 +49,41 @@ Raspberry Pi notes
 Using the Raspberry Pi camera (CSI)
 ----------------------------------
 
-This repository supports the Raspberry Pi Camera Module (connected to the CSI pins) via `libcamera` Python bindings.
+This repository supports the Raspberry Pi Camera Module (connected to the CSI pins) via OpenCV with libcamera backend.
 
 Basic steps (on the Raspberry Pi itself):
 
-1. Update OS packages and install libcamera / python bindings (example for Raspberry Pi OS Bookworm/Bullseye):
+1. Update OS packages and install OpenCV with libcamera support (example for Raspberry Pi OS Bookworm/Bullseye):
 
 ```bash
 sudo apt update
 sudo apt full-upgrade -y
-# Install libcap-dev (needed for python-prctl dependency if using pip)
-sudo apt install -y libcap-dev
-# Install libcamera, python bindings, and OpenCV
-sudo apt install -y python3-libcamera python3-opencv libcamera-apps
+# Install OpenCV and libcamera
+sudo apt install -y python3-opencv libcamera-apps
 ```
 
 2. Install Python packages in your virtualenv (or system Python):
 
 ```bash
 # activate your venv, then:
-pip install mediapipe opencv-python
-# Note: on some Pi images mediapipe may need a prebuilt wheel or platform-specific install.
+pip install mediapipe
+# Note: on some Pi images mediapipe may need a prebuilt wheel. For Raspberry Pi 4/5, download from:
+# https://github.com/nihui/mediapipe/releases (look for aarch64 wheel)
+# Then pip install the .whl file
 ```
 
-3. Run the demo using the Pi camera (script will use libcamera when `--use-picamera` is passed):
+3. Run the demo using the Pi camera (script will use /dev/video0 when `--use-picamera` is passed):
 
 ```bash
 python face_mediapipe.py --use-picamera --model mesh
 ```
 
 Notes and troubleshooting
-- If `from libcamera import CameraManager` fails, install `python3-libcamera` as shown above.
-- If you get "No module named 'libcamera'" error, install `python3-libcamera` as shown above.
-- If you see color issues (frame looks blue/tinted), let me know — libcamera may return BGR instead of RGB and we can add a conversion.
-- `mediapipe` installation on Pi can be the most painful part. If pip install fails, tell me the Pi model and OS (32-bit vs 64-bit) and I can provide precise instructions or a prebuilt wheel suggestion.
-- If pip install of packages fails with "libcap development headers" error, install `libcap-dev` first as shown above, or use the OS packages instead of pip (recommended for Pi).
-- **Recommended**: Use the OS packages for libcamera (`sudo apt install python3-libcamera`) instead of pip to avoid build issues.
+- If the camera doesn't work, make sure libcamera is configured as the OpenCV backend (it should be by default on Bookworm).
+- If you get protobuf errors with mediapipe, use a prebuilt wheel from the link above.
+- If you see color issues (frame looks blue/tinted), let me know — we can add color conversion.
+- `mediapipe` installation on Pi can be the most painful part. If pip install fails, use the prebuilt wheel for your Pi model.
+- **Recommended**: Use the OS packages for OpenCV and libcamera to avoid build issues.
 
 If you'd like, I can expand this README with tested step-by-step Pi instructions for your specific Pi model.
 
