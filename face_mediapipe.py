@@ -78,14 +78,25 @@ def main() -> int:
     # Initialize capture: either Pi CSI camera (via OpenCV/libcamera) or USB webcam
     if args.use_picamera:
         # On Raspberry Pi with libcamera backend, try common CSI camera devices
-        video_devices = ['/dev/video0', '/dev/video10', '/dev/video11', '/dev/video12', '/dev/video13', '/dev/video14', '/dev/video15', '/dev/video16', '/dev/video18', '/dev/video20', '/dev/video21', '/dev/video22', '/dev/vide23', '/dev/video31']
+        video_devices = ['/dev/video0', '/dev/video10', '/dev/video11', '/dev/video12', '/dev/video13', '/dev/video14', '/dev/video15', '/dev/video16', '/dev/video18', '/dev/video20', '/dev/video21', '/dev/video22', '/dev/video23', '/dev/video31']
         cap = None
         for device in video_devices:
+            print(f"Trying to open {device}...")
             cap = cv2.VideoCapture(device)
             if cap.isOpened():
                 print(f"Opened camera at {device}")
-                break
-            cap.release()
+                # Test reading a frame
+                ret, test_frame = cap.read()
+                if ret and test_frame is not None:
+                    print(f"Successfully read test frame from {device}")
+                    break
+                else:
+                    print(f"Failed to read frame from {device}, trying next...")
+                    cap.release()
+                    cap = None
+            else:
+                print(f"Failed to open {device}")
+                cap.release()
         
         if cap is None or not cap.isOpened():
             raise RuntimeError(f"Could not open any CSI camera device. Tried: {video_devices}")
