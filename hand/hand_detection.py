@@ -111,7 +111,9 @@ class HandDetector:
         
         # Display status on frame
         cv2.putText(frame, status_text, (10, 50), 
-                    cv2.FONT_HERSHEY_SIMPLEX, 1.2, status_color, 3)
+                    cv2.FONT_HERSHEY_SIMPLEX, 1.2, status_color, 3) 
+        
+        
         
         # Display boolean value
         cv2.putText(frame, f"State: {hand_state}", (10, 100), 
@@ -127,7 +129,7 @@ class HandDetector:
 def main():
     """Main function to run hand detection"""
     # Initialize webcam
-    cap = cv2.VideoCapture(2)
+    cap = cv2.VideoCapture(1)
     cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
     cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
     
