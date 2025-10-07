@@ -276,26 +276,131 @@ def save_known_faces(known_faces: Dict[str, List[np.ndarray]], database_file: st
         print(f"Error saving face database: {e}")
 
 
-def find_best_match(features: np.ndarray, known_faces: Dict[str, List[np.ndarray]],
-                   threshold: float = 2.0) -> Tuple[Optional[str], float]:
-    """Find the best matching face from known faces database."""
-    best_match = None
-    best_similarity = 0.0
-
+def find_best_match(features: np.ndarray, known_faces: Dict[str, List[np.ndarray]]) -> Tuple[Optional[str], float]:
+    """Find the best matching face using adaptive thresholds and statistical analysis.
+    
+    Args:
+        features: Feature vector of the face to match
+        known_faces: Database of known faces
+    
+    Returns:
+        Tuple of (name, confidence) or (None, 0.0) if no match
+    """
+    if not known_faces:
+        return None, 0.0
+    
+    # Calculate distances to ALL samples of ALL people
+    person_matches = {}
+    all_distances = []  # Track all distances for adaptive thresholding
+    
     for name, encodings in known_faces.items():
+        distances = []
         for known_features in encodings:
             distance = np.linalg.norm(features - known_features)
-            similarity = max(0, 1 - (distance / threshold))
-
-            if similarity > best_similarity:
-                best_similarity = similarity
-                best_match = name
-
-    # Lowered threshold to 75% for better detection (was 85%)
-    if best_match and best_similarity >= 0.75:
-        return best_match, best_similarity
-
-    return None, 0.0
+            distances.append(distance)
+            all_distances.append(distance)
+        
+        # Use BEST 3 matches (or all if less than 3) - most discriminative
+        best_distances = sorted(distances)[:min(3, len(distances))]
+        avg_best_distance = np.mean(best_distances)
+        median_distance = np.median(distances)
+        min_distance = min(distances)
+        
+        person_matches[name] = {
+            'min_distance': min_distance,
+            'avg_best_distance': avg_best_distance,
+            'median_distance': median_distance,
+            'all_distances': distances,
+            'num_samples': len(distances)
+        }
+    
+    # Find person with minimum distance
+    best_match = None
+    best_min_distance = float('inf')
+    
+    for name, stats in person_matches.items():
+        if stats['min_distance'] < best_min_distance:
+            best_min_distance = stats['min_distance']
+            best_match = name
+    
+    if not best_match:
+        return None, 0.0
+    
+    # ADAPTIVE THRESHOLDING based on dataset statistics
+    best_stats = person_matches[best_match]
+    
+    # Calculate statistics for dataset quality
+    num_people = len(known_faces)
+    total_samples = sum(stats['num_samples'] for stats in person_matches.values())
+    avg_samples = total_samples / num_people
+    
+    # Base thresholds (distance-based)
+    if avg_samples >= 20:
+        # Good dataset - strict threshold
+        distance_threshold = 0.35
+        min_votes = 0.6  # 60% of top-3 must match
+    elif avg_samples >= 10:
+        # Decent dataset - medium threshold
+        distance_threshold = 0.45
+        min_votes = 0.5
+    else:
+        # Poor dataset - lenient threshold
+        distance_threshold = 0.55
+        min_votes = 0.4
+    
+    # Check 1: Minimum distance must be below threshold
+    if best_min_distance > distance_threshold:
+        return None, 0.0
+    
+    # Check 2: Average of best 3 matches must be good
+    if best_stats['avg_best_distance'] > distance_threshold * 1.3:
+        return None, 0.0
+    
+    # Check 3: Voting - how many samples agree?
+    good_matches = sum(1 for d in best_stats['all_distances'] if d < distance_threshold * 1.5)
+    vote_ratio = good_matches / best_stats['num_samples']
+    
+    if vote_ratio < min_votes:
+        return None, 0.0
+    
+    # Check 4: Distinctiveness - must be clearly different from others
+    if num_people > 1:
+        # Get second-best match
+        second_best_distance = float('inf')
+        for name, stats in person_matches.items():
+            if name != best_match:
+                if stats['min_distance'] < second_best_distance:
+                    second_best_distance = stats['min_distance']
+        
+        # Require significant gap (at least 25% better than second place)
+        margin = (second_best_distance - best_min_distance) / (best_min_distance + 0.01)
+        
+        if margin < 0.25:  # Not distinctive enough
+            return None, 0.0
+    else:
+        # Single person in database - be EXTRA careful
+        # Require very close match since there's no comparison
+        if best_min_distance > distance_threshold * 0.7:
+            return None, 0.0
+        
+        if best_stats['avg_best_distance'] > distance_threshold * 0.9:
+            return None, 0.0
+    
+    # Calculate confidence score (0-1)
+    # Based on: distance quality + voting confidence + distinctiveness
+    distance_score = max(0, 1 - (best_min_distance / distance_threshold))
+    vote_score = vote_ratio
+    
+    if num_people > 1:
+        # Include distinctiveness in confidence
+        margin = (second_best_distance - best_min_distance) / (best_min_distance + 0.01)
+        distinct_score = min(1.0, margin / 0.5)  # Max out at 50% margin
+        confidence = (distance_score * 0.5 + vote_score * 0.3 + distinct_score * 0.2)
+    else:
+        # Single person - heavily weight distance quality
+        confidence = (distance_score * 0.7 + vote_score * 0.3)
+    
+    return best_match, confidence
 
 
 def add_face_to_database(name: str, features: np.ndarray, known_faces: Dict[str, List[np.ndarray]]):
@@ -516,18 +621,60 @@ def main() -> int:
     total_samples = sum(len(faces) for faces in known_faces.values())
     print(f"Loaded {total_samples} known faces for {len(known_faces)} people")
     
+    # Analyze model quality
+    model_quality = "EXCELLENT"
+    min_samples = 999
+    needs_improvement = []
+    
     if known_faces:
         for name, samples in known_faces.items():
-            print(f"  - {name}: {len(samples)} sample(s)")
-            if len(samples) < 5:
-                print(f"    ⚠️  Recommended: Add {5 - len(samples)} more samples for better recognition")
+            num_samples = len(samples)
+            print(f"  - {name}: {num_samples} sample(s)", end="")
+            
+            if num_samples >= 30:
+                print(" ✓ Excellent")
+            elif num_samples >= 20:
+                print(" ✓ Very Good")
+            elif num_samples >= 15:
+                print(" ✓ Good")
+            elif num_samples >= 10:
+                print(" ⚠ Acceptable")
+                if model_quality == "EXCELLENT":
+                    model_quality = "GOOD"
+                needs_improvement.append(name)
+            else:
+                print(f" ❌ Poor - Add {15 - num_samples} more!")
+                model_quality = "POOR"
+                needs_improvement.append(name)
+            
+            min_samples = min(min_samples, num_samples)
     
-    print("\n📸 FACE RECOGNITION TIPS:")
-    print("  • Add 5-7 samples per person for best results")
-    print("  • Capture from different angles (front, left, right)")
-    print("  • Try different expressions (neutral, smile)")
-    print("  • Ensure good lighting")
-    print("  • Press 'a' to add each sample\n")
+    # Display model quality assessment
+    print("\n" + "="*70)
+    print("📊 MODEL QUALITY ASSESSMENT")
+    print("="*70)
+    
+    if model_quality == "EXCELLENT":
+        print("✓ Status: EXCELLENT - High accuracy expected")
+        print("  Recognition threshold: 82% (strict)")
+    elif model_quality == "GOOD":
+        print("⚠ Status: GOOD - Decent accuracy, but can improve")
+        print("  Recognition threshold: 82% (strict)")
+        print(f"  Recommendation: Add more samples for: {', '.join(needs_improvement)}")
+    else:
+        print("❌ Status: POOR - Low accuracy, false positives likely")
+        print("  Recognition threshold: 82% (strict, may still have errors)")
+        print(f"  ⚠️  URGENT: Add 15+ samples per person for reliable recognition")
+        if needs_improvement:
+            print(f"  People needing more samples: {', '.join(needs_improvement)}")
+    
+    print("\n💡 ACCURACY IMPROVEMENT TIPS:")
+    print("  1. Use 'a' for auto-collection (15-30 seconds recommended)")
+    print("  2. Move head naturally during collection (all angles)")
+    print("  3. Collect 20-30 samples per person for best results")
+    print("  4. Add multiple people to test distinctiveness")
+    print("  5. Watch confidence scores - HIGH (>90%) = very confident")
+    print("="*70 + "\n")
 
     print(f"Opening camera {camera_index}...")
     
@@ -675,26 +822,48 @@ def main() -> int:
                     y_min = int(min(y_coords) * height)
                     y_max = int(max(y_coords) * height)
 
-                    # Draw recognition result
+                    # Draw recognition result with confidence-based coloring
                     if name:
-                        # Known face - draw green box with name
-                        color = (0, 255, 0)
-                        text = f"{name} ({confidence:.2f})"
+                        # Known face - color based on confidence
+                        if confidence >= 0.75:
+                            color = (0, 255, 0)  # Bright green - very confident
+                            conf_label = "HIGH"
+                        elif confidence >= 0.60:
+                            color = (0, 200, 100)  # Medium green - confident
+                            conf_label = "GOOD"
+                        elif confidence >= 0.45:
+                            color = (0, 150, 150)  # Yellow-green - medium confidence
+                            conf_label = "MEDIUM"
+                        else:
+                            color = (0, 100, 200)  # Blue-green - low confidence
+                            conf_label = "LOW"
+                        
+                        text = f"{name}"
+                        conf_text = f"{confidence*100:.0f}% ({conf_label})"
                     else:
-                        # Unknown face - draw red box
+                        # Unknown face - red
                         color = (0, 0, 255)
                         text = f"Unknown"
+                        conf_text = f"No match"
 
-                    # Draw bounding box
-                    cv2.rectangle(image, (x_min, y_min), (x_max, y_max), color, 2)
+                    # Draw bounding box (thicker for high confidence)
+                    box_thickness = 3 if (name and confidence >= 0.90) else 2
+                    cv2.rectangle(image, (x_min, y_min), (x_max, y_max), color, box_thickness)
 
-                    # Draw name label
-                    cv2.putText(image, text, (x_min, y_min - 10),
-                              cv2.FONT_HERSHEY_SIMPLEX, 0.8, color, 2)
+                    # Draw name label with background
+                    text_size = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, 0.8, 2)[0]
+                    cv2.rectangle(image, (x_min, y_min - 35), (x_min + text_size[0] + 10, y_min), color, -1)
+                    cv2.putText(image, text, (x_min + 5, y_min - 10),
+                              cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 2)
                     
-                    # Show debug info for troubleshooting
-                    debug_text = f"Samples: {len(known_faces.get(name, []))} | Conf: {confidence:.2f}" if name else f"Best: {confidence:.2f}"
-                    cv2.putText(image, debug_text, (x_min, y_max + 20),
+                    # Show detailed confidence info
+                    if name:
+                        num_samples = len(known_faces.get(name, []))
+                        detail_text = f"{conf_text} | Samples: {num_samples}"
+                    else:
+                        detail_text = conf_text
+                    
+                    cv2.putText(image, detail_text, (x_min, y_max + 20),
                               cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 1)
 
             # FPS overlay
