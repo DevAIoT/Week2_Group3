@@ -26,6 +26,8 @@ except Exception:  # pragma: no cover - provides friendly message
     print("mediapipe is required. Install with: pip install mediapipe")
     raise
 
+import numpy as np
+
 
 mp_drawing = mp.solutions.drawing_utils
 mp_drawing_styles = mp.solutions.drawing_styles
@@ -44,7 +46,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--min-confidence", type=float, default=0.5,
                         help="Minimum detection confidence (0-1)")
     parser.add_argument("--use-picamera", action="store_true",
-                        help="Use the Raspberry Pi CSI camera via picamera2 (ignores --src)")
+                        help="Use the Raspberry Pi CSI camera via libcamera (ignores --src)")
     parser.add_argument("--no-display", action="store_true", help="Run headless (no GUI display)")
     return parser.parse_args()
 
@@ -75,28 +77,31 @@ def main() -> int:
     picam = None
     cap = None
 
-    # Initialize capture: either Picamera2 (CSI) or OpenCV VideoCapture
+    # Initialize capture: either libcamera (CSI) or OpenCV VideoCapture
     if args.use_picamera:
         try:
-            from picamera2 import Picamera2
+            from libcamera import CameraManager, Request, StreamRole
         except Exception:
-            print("picamera2 is required to use the Raspberry Pi camera. Install it using your OS package manager and the picamera2 package.")
+            print("libcamera python bindings required. Install with: sudo apt install python3-libcamera")
             raise
 
-        picam = Picamera2()
-        # create a simple preview configuration (size may be adjusted by driver)
-        try:
-            config = picam.create_preview_configuration({'main': {'size': (args.width, args.height)}})
-        except Exception:
-            # fallback to empty/default config if API differs
-            config = None
-        if config is not None:
-            picam.configure(config)
-        else:
-            picam.configure(picam.create_preview_configuration({}))
-        picam.start()
+        cm = CameraManager()
+        cameras = cm.get()
+        if not cameras:
+            raise RuntimeError("No cameras found")
+        camera = cameras[0]
+        camera.acquire()
+        config = camera.generate_configuration([StreamRole.Viewfinder])
+        stream_config = config.at(0)
+        stream_config.size.width = args.width
+        stream_config.size.height = args.height
+        camera.configure(config)
+        camera.start()
+        picam = camera  # reuse variable name for consistency
+        cap = None
     else:
         cap = get_capture(args.src, args.width, args.height)
+        picam = None
 
     # Choose model
     if args.model == "detection":
@@ -116,13 +121,17 @@ def main() -> int:
         while True:
             # Capture frame from the selected source
             if picam is not None:
-                # picamera2 returns an RGB numpy array
-                frame = picam.capture_array()
-                if frame is None:
-                    print("Could not capture frame from picamera2")
-                    break
-                # assume frame is RGB
-                image = frame.copy()
+                # libcamera synchronous capture
+                request = picam.create_request()
+                picam.queue_request(request)
+                # wait for completion
+                picam.wait()
+                # get the buffer
+                buffer = request.buffers[0]
+                fb = buffer[0]
+                data = fb.planes[0]
+                # assume RGB format
+                image = np.frombuffer(data, dtype=np.uint8).reshape((args.height, args.width, 3))
             else:
                 ret, frame = cap.read()
                 if not ret:
@@ -188,6 +197,7 @@ def main() -> int:
         if picam is not None:
             try:
                 picam.stop()
+                picam.release()
             except Exception:
                 pass
         if not args.no_display:
