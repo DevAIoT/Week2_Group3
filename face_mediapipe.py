@@ -49,12 +49,23 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def get_capture(src: str, width: int, height: int) -> cv2.VideoCapture:
+def get_capture(src: str, width: int, height: int, use_picamera: bool = False) -> cv2.VideoCapture:
     """Return an OpenCV VideoCapture for the given source.
 
     src may be a camera index (string containing digits) or a file path.
+    If use_picamera is True, tries common CSI camera device paths.
     """
-    if src.isdigit():
+    if use_picamera:
+        # Try common CSI camera device paths on Raspberry Pi
+        camera_paths = ["/dev/video0", "/dev/video10", "/dev/video11", "/dev/video12", "/dev/video20"]
+        for path in camera_paths:
+            cap = cv2.VideoCapture(path)
+            if cap.isOpened():
+                print(f"Opened CSI camera at {path}")
+                break
+        else:
+            raise RuntimeError("Could not open any CSI camera device")
+    elif src.isdigit():
         idx = int(src)
         cap = cv2.VideoCapture(idx)
     else:
@@ -75,35 +86,9 @@ def main() -> int:
     picam = None
     cap = None
 
-    # Initialize capture: either Pi CSI camera (via OpenCV/libcamera) or USB webcam
+    # Initialize capture: either Pi CSI camera (via OpenCV with libcamera backend) or USB webcam
     if args.use_picamera:
-        # On Raspberry Pi with libcamera backend, try common CSI camera devices
-        video_devices = ['/dev/video0', '/dev/video10', '/dev/video11', '/dev/video12', '/dev/video13', '/dev/video14', '/dev/video15', '/dev/video16', '/dev/video18', '/dev/video20', '/dev/video21', '/dev/video22', '/dev/video23', '/dev/video31']
-        cap = None
-        for device in video_devices:
-            print(f"Trying to open {device}...")
-            cap = cv2.VideoCapture(device)
-            if cap.isOpened():
-                print(f"Opened camera at {device}")
-                # Test reading a frame
-                ret, test_frame = cap.read()
-                if ret and test_frame is not None:
-                    print(f"Successfully read test frame from {device}")
-                    break
-                else:
-                    print(f"Failed to read frame from {device}, trying next...")
-                    cap.release()
-                    cap = None
-            else:
-                print(f"Failed to open {device}")
-                cap.release()
-        
-        if cap is None or not cap.isOpened():
-            raise RuntimeError(f"Could not open any CSI camera device. Tried: {video_devices}")
-        
-        # Try to set resolution
-        cap.set(cv2.CAP_PROP_FRAME_WIDTH, args.width)
-        cap.set(cv2.CAP_PROP_FRAME_HEIGHT, args.height)
+        cap = get_capture(args.src, args.width, args.height, use_picamera=True)
         picam = None
     else:
         cap = get_capture(args.src, args.width, args.height)
@@ -125,12 +110,12 @@ def main() -> int:
     prev_time = time.time()
     try:
         while True:
-            # Capture frame
+            # Capture frame from the selected source
             ret, frame = cap.read()
             if not ret:
                 print("End of stream or cannot read frame")
                 break
-            # For performance on Pi, you may want to reduce frame size here
+            # Convert BGR to RGB for MediaPipe
             image = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
             image.flags.writeable = False
 
