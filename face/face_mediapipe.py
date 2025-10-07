@@ -35,7 +35,7 @@ mp_face_mesh = mp.solutions.face_mesh
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="MediaPipe face demo for Raspberry Pi / webcam")
-    parser.add_argument("--src", type=str, default="0",
+    parser.add_argument("--src", type=str, default="1",
                         help="Video source. Camera index (0) or path to video file. Default=0")
     parser.add_argument("--model", choices=("detection", "mesh"), default="detection",
                         help="Which MediaPipe model to run: 'detection' (fast) or 'mesh' (landmarks)")
