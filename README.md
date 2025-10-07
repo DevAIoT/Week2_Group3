@@ -72,13 +72,14 @@ pip install mediapipe
 # Then pip install the .whl file
 ```
 
-3. Run the demo using the Pi camera (script will use /dev/video0 when `--use-picamera` is passed):
+3. Run the demo using the Pi camera (script will try common CSI camera devices when `--use-picamera` is passed):
 
 ```bash
 python face_mediapipe.py --use-picamera --model mesh
 ```
 
 Notes and troubleshooting
+- The script tries `/dev/video0`, `/dev/video10`, `/dev/video11`, `/dev/video12`, `/dev/video20` for the CSI camera.
 - If the camera doesn't work, make sure libcamera is configured as the OpenCV backend (it should be by default on Bookworm).
 - If you get protobuf errors with mediapipe, use a prebuilt wheel from the link above.
 - If you see color issues (frame looks blue/tinted), let me know — we can add color conversion.
