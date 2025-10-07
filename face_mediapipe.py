@@ -44,7 +44,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--min-confidence", type=float, default=0.5,
                         help="Minimum detection confidence (0-1)")
     parser.add_argument("--use-picamera", action="store_true",
-                        help="Use the Raspberry Pi CSI camera at /dev/video0 (ignores --src)")
+                        help="Use the Raspberry Pi CSI camera (tries /dev/video0, /dev/video10, etc.)")
     parser.add_argument("--no-display", action="store_true", help="Run headless (no GUI display)")
     return parser.parse_args()
 
@@ -77,13 +77,22 @@ def main() -> int:
 
     # Initialize capture: either Pi CSI camera (via OpenCV/libcamera) or USB webcam
     if args.use_picamera:
-        # On Raspberry Pi with libcamera backend, /dev/video0 is the CSI camera
-        cap = cv2.VideoCapture('/dev/video0')
+        # On Raspberry Pi with libcamera backend, try common CSI camera devices
+        video_devices = ['/dev/video0', '/dev/video10', '/dev/video11', '/dev/video12', '/dev/video13', '/dev/video14', '/dev/video15', '/dev/video16', '/dev/video18', '/dev/video20', '/dev/video21', '/dev/video22', '/dev/vide23', '/dev/video31']
+        cap = None
+        for device in video_devices:
+            cap = cv2.VideoCapture(device)
+            if cap.isOpened():
+                print(f"Opened camera at {device}")
+                break
+            cap.release()
+        
+        if cap is None or not cap.isOpened():
+            raise RuntimeError(f"Could not open any CSI camera device. Tried: {video_devices}")
+        
         # Try to set resolution
         cap.set(cv2.CAP_PROP_FRAME_WIDTH, args.width)
         cap.set(cv2.CAP_PROP_FRAME_HEIGHT, args.height)
-        if not cap.isOpened():
-            raise RuntimeError("Could not open CSI camera at /dev/video0. Make sure libcamera is configured as OpenCV backend.")
         picam = None
     else:
         cap = get_capture(args.src, args.width, args.height)
