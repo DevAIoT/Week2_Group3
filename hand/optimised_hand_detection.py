@@ -86,10 +86,9 @@ class HandDetector:
         Returns: (frame_with_drawings, hand_state)
         hand_state: True = open, False = closed or no hand detected
         """
-        # Resize frame for faster processing on Pi
-        small_frame = cv2.resize(frame, (160, 120))
-        rgb_frame = cv2.cvtColor(small_frame, cv2.COLOR_BGR2RGB)
-        # Process the small frame
+        # Convert BGR to RGB for MediaPipe (use original frame, not resized)
+        rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        # Process the frame
         results = self.hands.process(rgb_frame)
         
         hand_state = False  # Default: False (no hand or closed)
@@ -97,9 +96,6 @@ class HandDetector:
         status_color = (0, 0, 255)  # Red
         
         # Draw hand landmarks if detected
-        hand_state = False  # Default: False (no hand or closed)
-        status_text = "Hand: NOT DETECTED"
-        status_color = (0, 0, 255)  # Red
         if results.multi_hand_landmarks:
             for hand_landmarks in results.multi_hand_landmarks:
                 # Draw landmarks on frame
@@ -118,6 +114,7 @@ class HandDetector:
                 else:
                     status_text = "Hand: CLOSED (Door Closes)"
                     status_color = (0, 165, 255)  # Orange
+        
         # Display status on frame (smaller font for small frame)
         cv2.putText(frame, status_text, (10, 30),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.6, status_color, 2)
