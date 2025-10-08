@@ -22,9 +22,21 @@ ARDUINO_PORT = os.environ.get("ARDUINO_PORT", "/dev/ttyACM0")
 ARDUINO_BAUD = int(os.environ.get("ARDUINO_BAUD", "9600"))
 SHOW_WINDOW = os.environ.get("SHOW_WINDOW", "0") == "1"
 
-CURRENT_STATE = "0"
+class DoorState:
+    def __init__(self):
+        self._lock = threading.Lock()
+        self._unlocked = False
 
-# Try to import serial for Arduino communication
+    def set(self, unlocked: bool):
+        with self._lock:
+            self._unlocked = bool(unlocked)
+
+    def get(self) -> bool:
+        with self._lock:
+            return self._unlocked
+
+DOOR_STATE = DoorState()
+
 try:
     import serial
     SERIAL_AVAILABLE = True
@@ -76,8 +88,6 @@ class ArduinoController:
         if not self.connected:
             print("Arduino not connected")
             return
-            
-        command = "1"
 
         if SERIAL_AVAILABLE and self.ser and self.ser.is_open:
             command = "1" if state else "0"
@@ -91,11 +101,12 @@ class ArduinoController:
                     response = self.ser.readline().decode().strip()
                     if response:
                         print(f"← Arduino: {response}")
+                DOOR_STATE.set(state)
             except:
                 pass
         else:
             # Simulation mode
-            command = "1" if state else "0"
+            DOOR_STATE.set(state)
             print(f"[SIM] → Arduino: {state} ({command}) - Servo to {180 if state else 0}°")
 
         CURRENT_STATE = command
@@ -210,6 +221,7 @@ class HandDetector:
             if current_time - self.last_trigger_time > self.debounce_delay:
                 self.current_toggle_state = not self.current_toggle_state
                 self.arduino.send_command(self.current_toggle_state)
+                DOOR_STATE.set(self.current_toggle_state)
                 self.last_trigger_time = current_time
                 print(f"🖐️  Hand opened - Toggle to: {self.current_toggle_state}")
         
@@ -263,8 +275,11 @@ def stream():
 
 @app.route("/status")
 def status():
-    return Response(f"Door State: {'ON' if CURRENT_STATE == '1' else 'OFF'}\n",
-                    mimetype='text/plain')
+    unlocked = DOOR_STATE.get()
+    return Response(
+        f'{{"unlocked": {str(unlocked).lower()}, "state": "{ "UNLOCKED" if unlocked else "LOCKED" }"}}\n',
+        mimetype="application/json"
+    )
 
 def start_stream_server():
     t = threading.Thread(
