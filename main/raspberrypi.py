@@ -1,0 +1,301 @@
+"""
+Combined Hand Detection and Arduino Control
+Detects hand open/closed state using MediaPipe and sends toggle commands to Arduino
+- Open hand: Sends toggle command to Arduino (alternates between True/False)
+- Closed hand: No action (idle state)
+- Each hand opening triggers a toggle
+"""
+
+import cv2
+import mediapipe as mp
+import math
+import time
+
+# Try to import serial for Arduino communication
+try:
+    import serial
+    SERIAL_AVAILABLE = True
+    print("Serial library loaded successfully")
+except ImportError:
+    print("Warning: pyserial not available. Arduino control disabled.")
+    print("Install with: pip install pyserial")
+    SERIAL_AVAILABLE = False
+
+def get_capture(src: int, width: int, height: int) -> cv2.VideoCapture:
+    """Open camera capture and check if available."""
+    cap = cv2.VideoCapture(src)
+    cap.set(cv2.CAP_PROP_FRAME_WIDTH, width)
+    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, height)
+    if not cap.isOpened():
+        raise RuntimeError(f"Could not open camera {src}. Try a different index (0, 1, 2, etc).")
+    return cap
+
+class ArduinoController:
+    def __init__(self, port='/dev/ttyACM0', baudrate=9600, timeout=1):
+        """Initialize Arduino controller for Raspberry Pi"""
+        self.port = port
+        self.baudrate = baudrate
+        self.timeout = timeout
+        self.ser = None
+        self.connected = False
+        
+    def connect(self):
+        """Establish serial connection with Arduino"""
+        if not SERIAL_AVAILABLE:
+            print("Serial not available - running in simulation mode")
+            self.connected = True
+            return True
+            
+        try:
+            self.ser = serial.Serial(self.port, self.baudrate, timeout=self.timeout)
+            time.sleep(2)  # Give Arduino time to reset after connection
+            print(f"✓ Connected to Arduino on {self.port}")
+            self.connected = True
+            return True
+        except Exception as e:
+            print(f"✗ Failed to connect to Arduino: {e}")
+            print("Available ports to try: /dev/ttyUSB0, /dev/ttyACM0")
+            self.connected = False
+            return False
+    
+    def send_command(self, state):
+        """Send True/False command to Arduino"""
+        if not self.connected:
+            print("Arduino not connected")
+            return
+            
+        if SERIAL_AVAILABLE and self.ser and self.ser.is_open:
+            command = "1" if state else "0"
+            self.ser.write(command.encode())
+            print(f"→ Arduino: {state} ({command}) - Servo to {180 if state else 0}°")
+            
+            # Try to read response
+            try:
+                time.sleep(0.1)
+                if self.ser.in_waiting > 0:
+                    response = self.ser.readline().decode().strip()
+                    if response:
+                        print(f"← Arduino: {response}")
+            except:
+                pass
+        else:
+            # Simulation mode
+            command = "1" if state else "0"
+            print(f"[SIM] → Arduino: {state} ({command}) - Servo to {180 if state else 0}°")
+    
+    def disconnect(self):
+        """Close serial connection"""
+        if SERIAL_AVAILABLE and self.ser and self.ser.is_open:
+            self.ser.close()
+        print("Arduino disconnected")
+
+class HandDetector:
+    def __init__(self, arduino_controller):
+        # Initialize MediaPipe Hands
+        self.mp_hands = mp.solutions.hands
+        self.hands = self.mp_hands.Hands(
+            static_image_mode=False,
+            max_num_hands=1,
+            min_detection_confidence=0.7,
+            min_tracking_confidence=0.5
+        )
+        self.mp_draw = mp.solutions.drawing_utils
+        
+        # Arduino controller
+        self.arduino = arduino_controller
+        
+        # Toggle state management
+        self.last_hand_state = False
+        self.current_toggle_state = False  # Current Arduino state
+        self.last_trigger_time = 0
+        self.debounce_delay = 1.0  # 1 second delay between triggers
+        
+    def calculate_distance(self, point1, point2):
+        """Calculate Euclidean distance between two points"""
+        return math.sqrt((point1.x - point2.x)**2 + (point1.y - point2.y)**2)
+    
+    def is_hand_open(self, hand_landmarks):
+        """
+        Determine if hand is open or closed
+        Returns True if ALL 5 fingers are extended
+        """
+        # Get key landmarks
+        thumb_tip = hand_landmarks.landmark[4]
+        index_tip = hand_landmarks.landmark[8]
+        middle_tip = hand_landmarks.landmark[12]
+        ring_tip = hand_landmarks.landmark[16]
+        pinky_tip = hand_landmarks.landmark[20]
+        
+        # Get palm landmarks for reference
+        thumb_mcp = hand_landmarks.landmark[2]
+        index_mcp = hand_landmarks.landmark[5]
+        middle_mcp = hand_landmarks.landmark[9]
+        ring_mcp = hand_landmarks.landmark[13]
+        pinky_mcp = hand_landmarks.landmark[17]
+        
+        # Calculate distances from fingertips to palm
+        thumb_distance = self.calculate_distance(thumb_tip, thumb_mcp)
+        index_distance = self.calculate_distance(index_tip, index_mcp)
+        middle_distance = self.calculate_distance(middle_tip, middle_mcp)
+        ring_distance = self.calculate_distance(ring_tip, ring_mcp)
+        pinky_distance = self.calculate_distance(pinky_tip, pinky_mcp)
+        
+        # Threshold for considering fingers extended
+        threshold = 0.1
+        
+        # Count how many fingers are extended
+        fingers_extended = 0
+        if thumb_distance > threshold:
+            fingers_extended += 1
+        if index_distance > threshold:
+            fingers_extended += 1
+        if middle_distance > threshold:
+            fingers_extended += 1
+        if ring_distance > threshold:
+            fingers_extended += 1
+        if pinky_distance > threshold:
+            fingers_extended += 1
+            
+        # Hand is considered open if all 5 fingers are extended
+        return fingers_extended == 5
+    
+    def detect_hand_and_control_arduino(self, frame):
+        """
+        Process frame, detect hand state, and control Arduino with toggle logic
+        """
+        # Convert BGR to RGB for MediaPipe
+        rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        results = self.hands.process(rgb_frame)
+        
+        hand_state = False
+        status_text = "Hand: NOT DETECTED"
+        status_color = (0, 0, 255)  # Red
+        
+        # Draw hand landmarks if detected
+        if results.multi_hand_landmarks:
+            for hand_landmarks in results.multi_hand_landmarks:
+                # Draw landmarks
+                self.mp_draw.draw_landmarks(
+                    frame,
+                    hand_landmarks,
+                    self.mp_hands.HAND_CONNECTIONS,
+                    self.mp_draw.DrawingSpec(color=(0, 255, 0), thickness=1, circle_radius=1),
+                    self.mp_draw.DrawingSpec(color=(255, 0, 0), thickness=1)
+                )
+                # Check if hand is open
+                hand_state = self.is_hand_open(hand_landmarks)
+        
+        # Arduino control logic with toggle
+        current_time = time.time()
+        
+        if hand_state and not self.last_hand_state:
+            # Hand just opened - trigger toggle if enough time has passed
+            if current_time - self.last_trigger_time > self.debounce_delay:
+                self.current_toggle_state = not self.current_toggle_state
+                self.arduino.send_command(self.current_toggle_state)
+                self.last_trigger_time = current_time
+                print(f"🖐️  Hand opened - Toggle to: {self.current_toggle_state}")
+        
+        # Update status based on hand state
+        if hand_state:
+            status_text = "Hand: OPEN (Trigger Ready)"
+            status_color = (0, 255, 0)  # Green
+        else:
+            status_text = "Hand: CLOSED (Idle)"
+            status_color = (0, 165, 255)  # Orange
+        
+        # Update last hand state
+        self.last_hand_state = hand_state
+        
+        # Display status on frame
+        arduino_status = f"Arduino: {'ON' if self.current_toggle_state else 'OFF'} (180°/0°)"
+        
+        cv2.putText(frame, status_text, (10, 30),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, status_color, 2)
+        cv2.putText(frame, f"Hand State: {hand_state}", (10, 60),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, status_color, 1)
+        cv2.putText(frame, arduino_status, (10, 90),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 0), 1)  # Yellow
+        
+        return frame, hand_state
+    
+    def release(self):
+        """Release MediaPipe resources"""
+        self.hands.close()
+
+def main():
+    """Main function for hand detection with Arduino control"""
+    print("Hand Detection + Arduino Control System")
+    print("=" * 45)
+    
+    # Configuration
+    CAMERA_INDEX = 0  # Raspberry Pi camera
+    WIDTH = 320       # Optimized for Pi
+    HEIGHT = 240
+    ARDUINO_PORT = '/dev/ttyACM0'  # Adjust as needed
+    
+    # Initialize Arduino controller
+    arduino = ArduinoController(port=ARDUINO_PORT)
+    
+    # Initialize camera
+    try:
+        cap = get_capture(CAMERA_INDEX, WIDTH, HEIGHT)
+        print(f"✓ Camera initialized: {WIDTH}x{HEIGHT}")
+    except RuntimeError as e:
+        print(f"✗ Camera error: {e}")
+        return
+    
+    # Connect to Arduino
+    if not arduino.connect():
+        print("Warning: Continuing without Arduino connection")
+    
+    # Initialize hand detector with Arduino controller
+    detector = HandDetector(arduino)
+    
+    print("\nSystem ready!")
+    print("Controls:")
+    print("- Open your hand: Toggle Arduino state (True ↔ False)")
+    print("- Close your hand: Idle (no action)")
+    print("- Press 'q' to quit")
+    print("-" * 45)
+    
+    try:
+        while True:
+            success, frame = cap.read()
+            if not success:
+                print("Failed to read from camera")
+                break
+            
+            # Flip frame horizontally for mirror effect
+            frame = cv2.flip(frame, 1)
+            
+            # Detect hand and control Arduino
+            frame, hand_state = detector.detect_hand_and_control_arduino(frame)
+            
+            # Print state to console (overwrite previous line)
+            arduino_state = "ON" if detector.current_toggle_state else "OFF"
+            print(f"Hand: {'OPEN' if hand_state else 'CLOSED'} | Arduino: {arduino_state} | Press 'q' to quit", end='\r')
+            
+            # Display the frame
+            cv2.imshow('Hand Detection + Arduino Control', frame)
+            
+            # Break loop on 'q' key press
+            if cv2.waitKey(1) & 0xFF == ord('q'):
+                break
+    
+    except KeyboardInterrupt:
+        print("\nProgram interrupted by user")
+    
+    except Exception as e:
+        print(f"\nError: {e}")
+    
+    finally:
+        # Cleanup
+        cap.release()
+        cv2.destroyAllWindows()
+        detector.release()
+        arduino.disconnect()
+        print("\nSystem shutdown complete!")
+
+if __name__ == "__main__":
+    main()
