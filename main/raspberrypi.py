@@ -22,6 +22,8 @@ ARDUINO_PORT = os.environ.get("ARDUINO_PORT", "/dev/ttyACM0")
 ARDUINO_BAUD = int(os.environ.get("ARDUINO_BAUD", "9600"))
 SHOW_WINDOW = os.environ.get("SHOW_WINDOW", "0") == "1"
 
+CURRENT_STATE = "0"
+
 # Try to import serial for Arduino communication
 try:
     import serial
@@ -77,6 +79,7 @@ class ArduinoController:
             
         if SERIAL_AVAILABLE and self.ser and self.ser.is_open:
             command = "1" if state else "0"
+            CURRENT_STATE = command
             self.ser.write(command.encode())
             print(f"→ Arduino: {state} ({command}) - Servo to {180 if state else 0}°")
             
@@ -254,6 +257,11 @@ def _mjpeg_generator():
 def stream():
     return Response(_mjpeg_generator(),
                     mimetype='multipart/x-mixed-replace; boundary=frame')
+
+@app.route("/status")
+def status():
+    return Response(f"Arduino State: {'ON' if CURRENT_STATE == '1' else 'OFF'}\n",
+                    mimetype='text/plain')
 
 def start_stream_server():
     t = threading.Thread(
