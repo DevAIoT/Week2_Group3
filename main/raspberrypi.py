@@ -77,9 +77,10 @@ class ArduinoController:
             print("Arduino not connected")
             return
             
+        command = "1"
+
         if SERIAL_AVAILABLE and self.ser and self.ser.is_open:
             command = "1" if state else "0"
-            CURRENT_STATE = command
             self.ser.write(command.encode())
             print(f"→ Arduino: {state} ({command}) - Servo to {180 if state else 0}°")
             
@@ -96,6 +97,8 @@ class ArduinoController:
             # Simulation mode
             command = "1" if state else "0"
             print(f"[SIM] → Arduino: {state} ({command}) - Servo to {180 if state else 0}°")
+
+        CURRENT_STATE = command
     
     def disconnect(self):
         """Close serial connection"""
@@ -260,7 +263,7 @@ def stream():
 
 @app.route("/status")
 def status():
-    return Response(f"Arduino State: {'ON' if CURRENT_STATE == '1' else 'OFF'}\n",
+    return Response(f"Door State: {'ON' if CURRENT_STATE == '1' else 'OFF'}\n",
                     mimetype='text/plain')
 
 def start_stream_server():
