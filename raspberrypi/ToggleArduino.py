@@ -16,7 +16,7 @@ class ArduinoController:
         Initialize Arduino controller
         
         Args:
-            port: Serial port (e.g., 'COM3' on Windows, '/dev/ttyUSB0' on Linux)
+            port: Serial port (e.g., 'COM3' on Windows, '/dev/ttyACM0' on Linux)
             baudrate: Communication speed (must match Arduino sketch)
             timeout: Serial timeout in seconds
         """
@@ -142,7 +142,7 @@ class ArduinoController:
 def main():
     """Main function"""
     # Configuration
-    ARDUINO_PORT = '/dev/ttyUSB0'  # Raspberry Pi port (change to /dev/ttyACM0 if needed)
+    ARDUINO_PORT = '/dev/ttyACM0'  # Raspberry Pi port (change to /dev/ttyACM0 if needed)
     BAUDRATE = 9600
     TOGGLE_INTERVAL = 10  # seconds
     
