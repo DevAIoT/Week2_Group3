@@ -133,7 +133,7 @@ class HandDetector:
 def main():
     """Main function to run hand detection"""
     # Camera settings
-    camera_index = 1  # Use 0 for Raspberry Pi default camera
+    camera_index = 0  # Use 0 for Raspberry Pi default camera
     width = 320      # Lower resolution for better performance
     height = 240
     # Initialize webcam with robust function
