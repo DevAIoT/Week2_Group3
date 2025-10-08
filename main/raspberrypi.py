@@ -312,7 +312,7 @@ def main():
             frame = cv2.flip(frame, 1)
 
             # Process
-            frame, hand_state = detector.process_frame(frame)
+            frame, hand_state = detector.detect_hand_and_control_arduino(frame)
 
             # Encode once per loop (publish to stream)
             ok, buf = cv2.imencode(".jpg", frame, [int(cv2.IMWRITE_JPEG_QUALITY), 80])
