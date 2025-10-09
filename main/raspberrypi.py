@@ -152,28 +152,25 @@ def _to_dbfs(rms: float) -> float:
 
 _level_lock = threading.Lock()
 _last_level = {"rms": 0.0, "peak": 0.0, "dbfs": -120.0, "level": 0.0}
-
 class VoiceController:
     def __init__(self, arduino_controller):
-        """Initialize voice recognition controller"""
+        """Initialize voice recognition controller + shared mic level metrics."""
         self.arduino = arduino_controller
         self.running = False
-        self.audio_queue = queue.Queue()
+        self.audio_queue: "queue.Queue[bytes|None]" = queue.Queue()
         self.recognizer = None
-        self.voice_thread = None
+        self.voice_thread: threading.Thread | None = None
         self.audio_stream = None
-        
+
         if VOSK_AVAILABLE and VOICE_ENABLED:
             self._initialize_vosk()
-    
+
     def _initialize_vosk(self):
-        """Initialize Vosk model and recognizer"""
+        """Initialize Vosk model and recognizer."""
         try:
             if not os.path.exists(VOICE_MODEL_PATH):
-                print(f"Warning: Vosk model not found at {VOICE_MODEL_PATH}")
-                print("Voice commands disabled. Download a model from https://alphacephei.com/vosk/models")
+                print(f"Vosk model not found at {VOICE_MODEL_PATH} — voice disabled.")
                 return False
-                
             model = vosk.Model(VOICE_MODEL_PATH)
             self.recognizer = vosk.KaldiRecognizer(model, VOICE_SAMPLE_RATE)
             self.recognizer.SetWords(True)
@@ -182,27 +179,27 @@ class VoiceController:
         except Exception as e:
             print(f"Error loading Vosk model: {e}")
             return False
-    
+
     def _audio_callback(self, indata, frames, time_info, status):
         if status:
             print(f"Audio status: {status}", file=sys.stderr)
-        # RawInputStream gives int16 bytes; copy for queue
+        # queue raw bytes for STT
         self.audio_queue.put(bytes(indata))
-        # Compute volume metrics directly here (no extra stream)
+        # compute level metrics here (no extra stream)
         try:
             x = np.frombuffer(indata, dtype=np.int16).astype(np.float32) / 32768.0
             if x.size:
                 peak = float(np.max(np.abs(x)))
                 rms = float(np.sqrt(np.mean(x**2)))
                 dbfs = float(_to_dbfs(rms))
-                # simple normalized bar (tweak gain as needed)
-                level = float(min(1.0, max(0.0, rms * 3.0)))
+                level = float(min(1.0, max(0.0, rms * 3.0)))  # adjust gain factor as needed
                 with _level_lock:
                     _last_level.update({"rms": rms, "peak": peak, "dbfs": dbfs, "level": level})
         except Exception:
             pass
-    
+
     def _process_audio(self):
+        """Consume mic buffers, run Vosk, and trigger Arduino commands."""
         while self.running:
             try:
                 data = self.audio_queue.get(timeout=1.0)
@@ -210,58 +207,62 @@ class VoiceController:
                     break
                 if self.recognizer and self.recognizer.AcceptWaveform(data):
                     result = json.loads(self.recognizer.Result())
-                    text = result.get('text', '').strip().lower()
+                    text = (result.get("text") or "").strip().lower()
                     if text:
-                        # Simple command grammar
-                        if text == 'on' or 'turn on' in text or text.endswith(' on'):
+                        # Simple intent grammar
+                        if text == "on" or "turn on" in text or text.endswith(" on"):
                             print(">>> Voice Command: ON <<<")
                             self.arduino.set_state(True)
-                        elif text == 'off' or 'turn off' in text or text.endswith(' off'):
+                        elif text == "off" or "turn off" in text or text.endswith(" off"):
                             print(">>> Voice Command: OFF <<<")
                             self.arduino.set_state(False)
+                else:
+                    if self.recognizer:
+                        partial = json.loads(self.recognizer.PartialResult())
+                        partial_text = (partial.get("partial") or "").strip()
+                        if partial_text:
+                            print(f"🎙️ Listening: {partial_text}...", end="\r", flush=True)
             except queue.Empty:
                 continue
             except Exception as e:
                 print(f"Voice processing error: {e}")
-    
+
     def start(self):
-        """Start voice recognition"""
+        """Start voice recognition + volume meter."""
+        if not (VOSK_AVAILABLE and VOICE_ENABLED and self.recognizer):
+            print("Voice recognition not available")
+            return False
         try:
             self.running = True
-            
-            # Start audio stream
             self.audio_stream = sd.RawInputStream(
-                samplerate=VOICE_SAMPLE_RATE, 
-                blocksize=8000, 
-                dtype='int16',
-                channels=1, 
-                callback=self._audio_callback
+                samplerate=VOICE_SAMPLE_RATE,
+                blocksize=8000,
+                dtype="int16",
+                channels=1,
+                callback=self._audio_callback,
             )
             self.audio_stream.start()
-            
-            # Start processing thread
             self.voice_thread = threading.Thread(target=self._process_audio, daemon=True)
             self.voice_thread.start()
-            
-            print("🎤 Voice recognition started - listening for 'on', 'off', 'turn on', 'turn off'")
+            print("🎤 Voice recognition started — say 'on' / 'off' / 'turn on' / 'turn off'")
             return True
-            
         except Exception as e:
             print(f"Error starting voice recognition: {e}")
+            self.running = False
             return False
-    
+
     def stop(self):
-        """Stop voice recognition"""
+        """Stop voice recognition cleanly."""
         self.running = False
-        
         if self.audio_stream:
-            self.audio_stream.stop()
-            self.audio_stream.close()
-        
+            try:
+                self.audio_stream.stop()
+                self.audio_stream.close()
+            except Exception:
+                pass
         if self.voice_thread:
-            self.audio_queue.put(None)  # Signal thread to stop
+            self.audio_queue.put(None)  # unblock
             self.voice_thread.join(timeout=2.0)
-        
         print("🎤 Voice recognition stopped")
 
 class HandDetector:
