@@ -82,23 +82,20 @@ def get_capture(src: int, width: int, height: int) -> cv2.VideoCapture:
 
 class ArduinoController:
     def __init__(self, port='/dev/ttyACM0', baudrate=9600, timeout=1):
-        """Initialize Arduino controller for Raspberry Pi"""
         self.port = port
         self.baudrate = baudrate
         self.timeout = timeout
         self.ser = None
         self.connected = False
-        
+
     def connect(self):
-        """Establish serial connection with Arduino"""
         if not SERIAL_AVAILABLE:
             print("Serial not available - running in simulation mode")
             self.connected = True
             return True
-            
         try:
             self.ser = serial.Serial(self.port, self.baudrate, timeout=self.timeout)
-            time.sleep(2)  # Give Arduino time to reset after connection
+            time.sleep(2)
             print(f"✓ Connected to Arduino on {self.port}")
             self.connected = True
             return True
@@ -107,39 +104,52 @@ class ArduinoController:
             print("Available ports to try: /dev/ttyUSB0, /dev/ttyACM0")
             self.connected = False
             return False
-    
-    def send_command(self, state: bool):
-        """Send True/False to Arduino and update DOOR_STATE."""
+
+    # === DOOR / SERVO ===
+    def send_servo(self, unlocked: bool):
+        """Control the door servo (hand gestures). Updates DOOR_STATE."""
         if not self.connected:
-            print("Arduino not connected")
+            print("Arduino not connected (servo)")
             return
-
-        cmd = "1" if state else "0"
-
-        # Simulation or no serial
+        cmd = "1" if unlocked else "0"  # your existing firmware mapping for servo
         if (not SERIAL_AVAILABLE) or (self.ser is None) or (not self.ser.is_open):
-            print(f"[SIM] → Arduino: {state} ({cmd}) - Servo to {180 if state else 0}°")
-            DOOR_STATE.set(state)
+            print(f"[SIM] → SERVO: {'UNLOCK' if unlocked else 'LOCK'} ({cmd})")
+            DOOR_STATE.set(unlocked)
             return
-
         try:
-            self.ser.write(cmd.encode())
-            print(f"→ Arduino: {state} ({cmd}) - Servo to {180 if state else 0}°")
+            self.ser.write((cmd + "\n").encode())
+            print(f"→ SERVO: {'UNLOCK' if unlocked else 'LOCK'} ({cmd})")
             time.sleep(0.05)
             if self.ser.in_waiting > 0:
                 resp = self.ser.readline().decode(errors="ignore").strip()
                 if resp:
                     print(f"← Arduino: {resp}")
-            DOOR_STATE.set(state)
+            DOOR_STATE.set(unlocked)
         except Exception as e:
-            print("Serial write failed:", e)
-    
-    def set_state(self, state):
-        """Set Arduino to specific state (for voice commands)"""
-        self.send_command(state)
-    
+            print("Serial write failed (servo):", e)
+
+    # === LIGHTS (VOICE) ===
+    def send_lights(self, on: bool):
+        """Control lights via voice commands: ON_LIGHTS / OFF_LIGHTS."""
+        if not self.connected:
+            print("Arduino not connected (lights)")
+            return
+        cmd = "ON_LIGHTS" if on else "OFF_LIGHTS"
+        if (not SERIAL_AVAILABLE) or (self.ser is None) or (not self.ser.is_open):
+            print(f"[SIM] → LIGHTS: {cmd}")
+            return
+        try:
+            self.ser.write((cmd + "\n").encode())
+            print(f"→ LIGHTS: {cmd}")
+            time.sleep(0.05)
+            if self.ser.in_waiting > 0:
+                resp = self.ser.readline().decode(errors="ignore").strip()
+                if resp:
+                    print(f"← Arduino: {resp}")
+        except Exception as e:
+            print("Serial write failed (lights):", e)
+
     def disconnect(self):
-        """Close serial connection"""
         if SERIAL_AVAILABLE and self.ser and self.ser.is_open:
             self.ser.close()
         print("Arduino disconnected")
@@ -274,10 +284,10 @@ class VoiceController:
                             # Commands
                             if text == "on" or "turn on" in text or text.endswith(" on"):
                                 print(">>> Voice Command: ON <<<")
-                                self.arduino.set_state(True)
+                                self.arduino.send_lights(True)
                             elif text == "off" or "turn off" in text or text.endswith(" off"):
                                 print(">>> Voice Command: OFF <<<")
-                                self.arduino.set_state(False)
+                                self.arduino.send_lights(False)
 
                     # Reset partial state after a final
                     self._last_partial_text = ""
@@ -416,7 +426,7 @@ class HandDetector:
             # Hand just opened - trigger toggle if enough time has passed
             if current_time - self.last_trigger_time > self.debounce_delay:
                 self.current_toggle_state = not self.current_toggle_state
-                self.arduino.send_command(self.current_toggle_state)
+                self.arduino.send_servo(self.current_toggle_state)
                 DOOR_STATE.set(self.current_toggle_state)
                 self.last_trigger_time = current_time
                 print(f"🖐️  Hand opened - Toggle to: {self.current_toggle_state}")
