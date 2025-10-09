@@ -41,7 +41,7 @@ SHOW_WINDOW = os.environ.get("SHOW_WINDOW", "0") == "1"
 
 # Voice recognition configuration
 VOICE_SAMPLE_RATE = 16000
-VOICE_MODEL_PATH = os.environ.get("VOICE_MODEL_PATH", "vosk-model-small-en-us-0.15")
+VOICE_MODEL_PATH = os.environ.get("VOICE_MODEL_PATH", "vosk-model-en-us-0.22-lgraph")
 VOICE_ENABLED = os.environ.get("VOICE_ENABLED", "1") == "1"
 
 # Mic level SSE rate
@@ -220,7 +220,8 @@ class VoiceController:
                 print(f"Vosk model not found at {VOICE_MODEL_PATH} — voice disabled.")
                 return False
             model = vosk.Model(VOICE_MODEL_PATH)
-            self.recognizer = vosk.KaldiRecognizer(model, VOICE_SAMPLE_RATE)
+            grammar = ["turn on", "turn off"]
+            self.recognizer = vosk.KaldiRecognizer(model, VOICE_SAMPLE_RATE, grammar)
             self.recognizer.SetWords(True)
             print(f"Voice recognition initialized with model: {VOICE_MODEL_PATH}")
             return True
