@@ -1,15 +1,23 @@
 /*
-  Arduino Servo Controller
+  Arduino Servo Controller with LED Light Control
   
-  Receives serial commands from computer/Raspberry Pi and controls servo motor
-  Commands:
+  Receives serial commands from computer/Raspberry Pi and controls:
+  1. Servo motor (door control)
+  2. LED light (separate lighting control)
+  
+  Servo Commands:
   - '1' or 'true'  = Move servo to 180 degrees
   - '0' or 'false' = Move servo to 0 degrees
+  
+  LED Light Commands:
+  - 'TURN_ON'  = Turn on LED light (pin 8)
+  - 'TURN_OFF' = Turn off LED light (pin 8)
   
   Hardware connections:
   - Servo signal wire to digital pin 9
   - Servo power (red) to 5V
   - Servo ground (black/brown) to GND
+  - LED light to digital pin 8 (with appropriate resistor)
   
   Author: Arduino Servo Controller
   Date: October 2025
@@ -23,13 +31,16 @@ Servo doorServo;
 // Pin definitions
 const int SERVO_PIN = 9;        // Servo signal pin
 const int LED_PIN = 13;         // Built-in LED for status indication
+const int LED_LIGHT_PIN = 8;    // Additional LED for light indication
+
 
 // Servo positions
 const int SERVO_OPEN = 180;     // Open position (degrees)
 const int SERVO_CLOSED = 0;     // Closed position (degrees)
 
 // Variables
-bool currentState = false;      // Current state (false = closed, true = open)
+bool currentState = false;      // Current servo state (false = closed, true = open)
+bool lightState = false;        // Current light state (false = off, true = on)
 String inputString = "";        // String to hold incoming data
 bool stringComplete = false;    // Whether the string is complete
 
@@ -40,20 +51,23 @@ void setup() {
   // Attach servo to pin
   doorServo.attach(SERVO_PIN);
   
-  // Initialize LED pin
+  // Initialize LED pins
   pinMode(LED_PIN, OUTPUT);
+  pinMode(LED_LIGHT_PIN, OUTPUT);
   
-  // Set initial position
+  // Set initial positions
   doorServo.write(SERVO_CLOSED);
   digitalWrite(LED_PIN, LOW);
+  digitalWrite(LED_LIGHT_PIN, LOW);
   
   // Reserve string buffer
   inputString.reserve(200);
   
   // Startup message
-  Serial.println("Arduino Servo Controller Ready");
-  Serial.println("Commands: '1' = 180°, '0' = 0°");
-  Serial.println("Current position: 0° (CLOSED)");
+  Serial.println("Arduino Servo & Light Controller Ready");
+  Serial.println("Servo Commands: '1' = 180°, '0' = 0°");
+  Serial.println("Light Commands: 'TURN_ON', 'TURN_OFF'");
+  Serial.println("Current position: 0° (CLOSED), Light: OFF");
   Serial.println("------------------------");
   
   delay(1000); // Give servo time to reach initial position
@@ -80,9 +94,20 @@ void processCommand(String command) {
   // Convert to lowercase for easier comparison
   command.toLowerCase();
   
+  // Check for light control commands first
+  if (command == "turn_on") {
+    controlLight(true);
+    return;
+  }
+  else if (command == "turn_off") {
+    controlLight(false);
+    return;
+  }
+  
+  // Process servo commands
   bool newState = currentState; // Default to current state
   
-  // Parse command
+  // Parse servo command
   if (command == "1" || command == "true" || command == "t") {
     newState = true;
   }
@@ -92,11 +117,13 @@ void processCommand(String command) {
   else {
     // Invalid command
     Serial.println("ERROR: Invalid command '" + command + "'");
-    Serial.println("Valid commands: '1', 'true', '0', 'false'");
+    Serial.println("Valid commands:");
+    Serial.println("  Servo: '1', 'true', '0', 'false'");
+    Serial.println("  Light: 'TURN_ON', 'TURN_OFF'");
     return;
   }
   
-  // Execute command if state changed
+  // Execute servo command if state changed
   if (newState != currentState) {
     currentState = newState;
     moveServo(currentState);
@@ -128,6 +155,19 @@ void moveServo(bool state) {
   doorServo.write(targetAngle);
   
   Serial.println("Servo movement complete: " + String(targetAngle) + "° (" + stateStr + ")");
+}
+
+void controlLight(bool state) {
+  lightState = state;
+  String stateStr = state ? "ON" : "OFF";
+  
+  Serial.println("Setting light to " + stateStr);
+  
+  // Update light state
+  digitalWrite(LED_LIGHT_PIN, state ? HIGH : LOW);
+  
+  Serial.println("Light control complete: " + stateStr);
+}
 }
 
 /*
@@ -163,8 +203,10 @@ int getCurrentPosition() {
 // Function to print status
 void printStatus() {
   Serial.println("--- Status ---");
-  Serial.println("Current State: " + String(currentState ? "OPEN (1)" : "CLOSED (0)"));
+  Serial.println("Servo State: " + String(currentState ? "OPEN (1)" : "CLOSED (0)"));
   Serial.println("Servo Angle: " + String(getCurrentPosition()) + "°");
-  Serial.println("LED Status: " + String(digitalRead(LED_PIN) ? "ON" : "OFF"));
+  Serial.println("Status LED: " + String(digitalRead(LED_PIN) ? "ON" : "OFF"));
+  Serial.println("Light State: " + String(lightState ? "ON" : "OFF"));
+  Serial.println("Light Pin 8: " + String(digitalRead(LED_LIGHT_PIN) ? "HIGH" : "LOW"));
   Serial.println("-------------");
 }
