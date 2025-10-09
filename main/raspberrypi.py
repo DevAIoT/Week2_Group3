@@ -134,7 +134,7 @@ class ArduinoController:
         if not self.connected:
             print("Arduino not connected (lights)")
             return
-        cmd = "ON_LIGHTS" if on else "OFF_LIGHTS"   # <-- required commands
+        cmd = "turn_on" if on else "turn_off"
         if (not SERIAL_AVAILABLE) or (self.ser is None) or (not self.ser.is_open):
             print(f"[SIM] → LIGHTS: {cmd}")
             return
