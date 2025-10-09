@@ -226,10 +226,6 @@ class VoiceController:
     
     def start(self):
         """Start voice recognition"""
-        if not VOSK_AVAILABLE or not VOICE_ENABLED or not self.recognizer:
-            print("Voice recognition not available")
-            return False
-            
         try:
             self.running = True
             
