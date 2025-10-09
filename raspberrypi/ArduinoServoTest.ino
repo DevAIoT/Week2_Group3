@@ -169,3 +169,4 @@ void printStatus() {
   Serial.println("LED Status: " + String(digitalRead(LED_PIN) ? "ON" : "OFF"));
   Serial.println("-------------");
 }
+

@@ -41,8 +41,11 @@ const int SERVO_CLOSED = 0;     // Closed position (degrees)
 // Variables
 bool currentState = false;      // Current servo state (false = closed, true = open)
 bool lightState = false;        // Current light state (false = off, true = on)
-String inputString = "";        // String to hold incoming data
-bool stringComplete = false;    // Whether the string is complete
+
+// Buffer for command handling
+const size_t MAX_LINE = 32;
+char lineBuf[MAX_LINE];
+size_t idx = 0;
 
 void setup() {
   // Initialize serial communication
@@ -60,84 +63,68 @@ void setup() {
   digitalWrite(LED_PIN, LOW);
   digitalWrite(LED_LIGHT_PIN, LOW);
   
-  // Reserve string buffer
-  inputString.reserve(200);
-  
   // Startup message
-  Serial.println("Arduino Servo & Light Controller Ready");
-  Serial.println("Servo Commands: '1' = 180°, '0' = 0°");
-  Serial.println("Light Commands: 'TURN_ON', 'TURN_OFF'");
-  Serial.println("Current position: 0° (CLOSED), Light: OFF");
-  Serial.println("------------------------");
+  Serial.println("Ready: Servo(1/0) Light(TURN_ON/OFF)");
   
   delay(1000); // Give servo time to reach initial position
 }
 
 void loop() {
-  // Check for incoming serial data
-  if (stringComplete) {
-    processCommand(inputString);
-    
-    // Clear the string for next command
-    inputString = "";
-    stringComplete = false;
+  // Handle incoming serial data with buffer
+  while (Serial.available()) {
+    char ch = Serial.read();
+    if (ch == '\r') continue;                // ignore CR
+    if (ch == '\n') {                        // end of line
+      lineBuf[idx] = '\0';
+      handleCommand(lineBuf);
+      idx = 0;
+    } else if (idx < MAX_LINE - 1) {
+      lineBuf[idx++] = ch;                   // accumulate
+    } else {
+      idx = 0;                               // overflow -> reset
+    }
   }
   
   // Small delay to prevent overwhelming the processor
   delay(10);
 }
 
-void processCommand(String command) {
-  // Remove any whitespace
-  command.trim();
-  
-  // Convert to lowercase for easier comparison
-  command.toLowerCase();
-  
-  // Check for light control commands first
-  if (command == "turn_on") {
+void handleCommand(const char* cmd) {
+  // Light control commands
+  if (strcmp(cmd, "TURN_ON") == 0 || strcmp(cmd, "turn_on") == 0) {
     controlLight(true);
-    return;
-  }
-  else if (command == "turn_off") {
+  } else if (strcmp(cmd, "TURN_OFF") == 0 || strcmp(cmd, "turn_off") == 0) {
     controlLight(false);
-    return;
+  } else if (strcmp(cmd, "ON_LIGHTS") == 0) {
+    controlLight(true);
+  } else if (strcmp(cmd, "OFF_LIGHTS") == 0) {
+    controlLight(false);
+  } 
+  // Servo commands
+  else if (strcmp(cmd, "1") == 0 || strcmp(cmd, "true") == 0 || strcmp(cmd, "t") == 0) {
+    if (!currentState) {  // Only move if state changed
+      currentState = true;
+      moveServo(currentState);
+    }
+  } else if (strcmp(cmd, "0") == 0 || strcmp(cmd, "false") == 0 || strcmp(cmd, "f") == 0) {
+    if (currentState) {   // Only move if state changed
+      currentState = false;
+      moveServo(currentState);
+    }
+  } 
+  // Status command
+  else if (strcmp(cmd, "status") == 0) {
+    printStatus();
   }
-  
-  // Process servo commands
-  bool newState = currentState; // Default to current state
-  
-  // Parse servo command
-  if (command == "1" || command == "true" || command == "t") {
-    newState = true;
-  }
-  else if (command == "0" || command == "false" || command == "f") {
-    newState = false;
-  }
+  // Error for unknown commands
   else {
-    // Invalid command
-    Serial.println("ERROR: Invalid command '" + command + "'");
-    Serial.println("Valid commands:");
-    Serial.println("  Servo: '1', 'true', '0', 'false'");
-    Serial.println("  Light: 'TURN_ON', 'TURN_OFF'");
-    return;
-  }
-  
-  // Execute servo command if state changed
-  if (newState != currentState) {
-    currentState = newState;
-    moveServo(currentState);
-  }
-  else {
-    Serial.println("INFO: Servo already in requested position");
+    Serial.print("ERR:");
+    Serial.println(cmd);
   }
 }
 
 void moveServo(bool state) {
   int targetAngle = state ? SERVO_OPEN : SERVO_CLOSED;
-  String stateStr = state ? "OPEN" : "CLOSED";
-  
-  Serial.println("Moving servo to " + String(targetAngle) + "° (" + stateStr + ")");
   
   // Update LED status
   digitalWrite(LED_PIN, state ? HIGH : LOW);
@@ -148,48 +135,24 @@ void moveServo(bool state) {
   
   for (int angle = currentAngle; angle != targetAngle; angle += step) {
     doorServo.write(angle);
-    delay(15); // Smooth movement delay
+    delay(5); // Smooth movement delay
   }
   
   // Ensure final position
   doorServo.write(targetAngle);
   
-  Serial.println("Servo movement complete: " + String(targetAngle) + "° (" + stateStr + ")");
+  Serial.println("S:" + String(targetAngle));
 }
 
 void controlLight(bool state) {
   lightState = state;
-  String stateStr = state ? "ON" : "OFF";
-  
-  Serial.println("Setting light to " + stateStr);
   
   // Update light state
   digitalWrite(LED_LIGHT_PIN, state ? HIGH : LOW);
   
-  Serial.println("Light control complete: " + stateStr);
+  Serial.println("L:" + String(state ? "ON" : "OFF"));
 }
 
-
-/*
-  SerialEvent occurs whenever new data comes in the hardware serial RX.
-  This routine is run between each time loop() runs, so using delay inside
-  loop can delay response. Multiple bytes of data may be available.
-*/
-void serialEvent() {
-  while (Serial.available()) {
-    // Get the new byte
-    char inChar = (char)Serial.read();
-    
-    // Add it to the inputString
-    inputString += inChar;
-    
-    // If the incoming character is a newline, set a flag so the main loop can
-    // do something about it, or if we receive a single character command
-    if (inChar == '\n' || inChar == '\r' || inputString.length() == 1) {
-      stringComplete = true;
-    }
-  }
-}
 
 /*
   Additional utility functions
@@ -202,11 +165,5 @@ int getCurrentPosition() {
 
 // Function to print status
 void printStatus() {
-  Serial.println("--- Status ---");
-  Serial.println("Servo State: " + String(currentState ? "OPEN (1)" : "CLOSED (0)"));
-  Serial.println("Servo Angle: " + String(getCurrentPosition()) + "°");
-  Serial.println("Status LED: " + String(digitalRead(LED_PIN) ? "ON" : "OFF"));
-  Serial.println("Light State: " + String(lightState ? "ON" : "OFF"));
-  Serial.println("Light Pin 8: " + String(digitalRead(LED_LIGHT_PIN) ? "HIGH" : "LOW"));
-  Serial.println("-------------");
+  Serial.println("S:" + String(getCurrentPosition()) + " L:" + String(lightState ? "ON" : "OFF"));
 }
