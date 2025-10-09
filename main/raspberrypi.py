@@ -200,7 +200,8 @@ class VoiceController:
             self.audio_stream.start()
             self.voice_thread = threading.Thread(target=self._process_audio, daemon=True)
             self.voice_thread.start()
-            print("🎤 Voice recognition started — say 'on' / 'off' / 'turn on' / 'turn off'")
+            print("🎤 Voice recognition started — only active when door is OPEN")
+            print("    Voice commands: 'on' / 'off' / 'turn on' / 'turn off'")
             return True
         except Exception as e:
             print(f"Error starting voice recognition: {e}")
@@ -257,6 +258,12 @@ class VoiceController:
                 data = self.audio_queue.get(timeout=1.0)
                 if data is None:
                     break
+
+                # Check if door is open - only process voice when door is unlocked
+                door_is_open = DOOR_STATE.get()
+                if not door_is_open:
+                    # Door is closed - skip voice processing to reduce workload
+                    continue
 
                 # Check current loudness
                 with _level_lock:
