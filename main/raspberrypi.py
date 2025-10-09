@@ -162,6 +162,16 @@ class VoiceController:
         self.voice_thread: threading.Thread | None = None
         self.audio_stream = None
 
+        self.THROTTLE_PARTIAL_SEC = 0.5  # print partials at most twice per second
+        self.THROTTLE_FINAL_SEC   = 0.3  # minimal gap between finals (safety)
+        self.MIN_FINAL_WORDS      = 1    # ignore super-short finals (bump to 2/3 if you want)
+        self.MIN_FINAL_CHARS      = 3
+
+        self._last_partial_text = ""
+        self._last_partial_ts   = 0.0
+        self._last_final_text   = ""
+        self._last_final_ts     = 0.0
+
         if VOSK_AVAILABLE and VOICE_ENABLED:
             self._initialize_vosk()
 
@@ -199,57 +209,67 @@ class VoiceController:
             pass
 
     def _process_audio(self):
-        """Consume mic buffers, run Vosk, and trigger Arduino commands."""
+        """Consume mic buffers, run Vosk, print throttled partials/finals, and trigger Arduino commands."""
+        LOUDNESS_THRESHOLD = 0.015
+        
         while self.running:
             try:
                 data = self.audio_queue.get(timeout=1.0)
                 if data is None:
                     break
+
+                # Check current loudness
+                with _level_lock:
+                    loud_enough = _last_level["rms"] > LOUDNESS_THRESHOLD
+
+                if not loud_enough:
+                    # too quiet — skip processing this buffer
+                    continue
+                
+                now = time.time()
+
                 if self.recognizer and self.recognizer.AcceptWaveform(data):
                     result = json.loads(self.recognizer.Result())
                     text = (result.get("text") or "").strip().lower()
+
+                    # Throttle finals + ignore dupes/short noise
                     if text:
-                        # Simple intent grammar
-                        if text == "on" or "turn on" in text or text.endswith(" on"):
-                            print(">>> Voice Command: ON <<<")
-                            self.arduino.set_state(True)
-                        elif text == "off" or "turn off" in text or text.endswith(" off"):
-                            print(">>> Voice Command: OFF <<<")
-                            self.arduino.set_state(False)
+                        if (now - self._last_final_ts) >= self.THROTTLE_FINAL_SEC and (
+                            text != self._last_final_text
+                            and (len(text) >= self.MIN_FINAL_CHARS)
+                            and (len(text.split()) >= self.MIN_FINAL_WORDS)
+                        ):
+                            print(f"\n🎤 Final recognized: '{text}'")
+                            self._last_final_text = text
+                            self._last_final_ts = now
+
+                            # Commands
+                            if text == "on" or "turn on" in text or text.endswith(" on"):
+                                print(">>> Voice Command: ON <<<")
+                                self.arduino.set_state(True)
+                            elif text == "off" or "turn off" in text or text.endswith(" off"):
+                                print(">>> Voice Command: OFF <<<")
+                                self.arduino.set_state(False)
+
+                    # Reset partial state after a final
+                    self._last_partial_text = ""
+                    self._last_partial_ts = now
+
                 else:
+                    # Throttled partials (only when changed AND enough time passed)
                     if self.recognizer:
                         partial = json.loads(self.recognizer.PartialResult())
                         partial_text = (partial.get("partial") or "").strip()
-                        if partial_text:
-                            print(f"🎙️ Listening: {partial_text}...", end="\r", flush=True)
+                        if partial_text and partial_text != self._last_partial_text:
+                            if (now - self._last_partial_ts) >= self.THROTTLE_PARTIAL_SEC:
+                                print(f"🎙️ Listening: {partial_text}...", end="\r", flush=True)
+                                self._last_partial_text = partial_text
+                                self._last_partial_ts = now
+
             except queue.Empty:
                 continue
             except Exception as e:
                 print(f"Voice processing error: {e}")
-
-    def start(self):
-        """Start voice recognition + volume meter."""
-        if not (VOSK_AVAILABLE and VOICE_ENABLED and self.recognizer):
-            print("Voice recognition not available")
-            return False
-        try:
-            self.running = True
-            self.audio_stream = sd.RawInputStream(
-                samplerate=VOICE_SAMPLE_RATE,
-                blocksize=8000,
-                dtype="int16",
-                channels=1,
-                callback=self._audio_callback,
-            )
-            self.audio_stream.start()
-            self.voice_thread = threading.Thread(target=self._process_audio, daemon=True)
-            self.voice_thread.start()
-            print("🎤 Voice recognition started — say 'on' / 'off' / 'turn on' / 'turn off'")
-            return True
-        except Exception as e:
-            print(f"Error starting voice recognition: {e}")
-            self.running = False
-            return False
 
     def stop(self):
         """Stop voice recognition cleanly."""
