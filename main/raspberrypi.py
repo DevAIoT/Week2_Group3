@@ -108,33 +108,31 @@ class ArduinoController:
             self.connected = False
             return False
     
-    def send_command(self, state):
-        """Send True/False command to Arduino"""
+    def send_command(self, state: bool):
+        """Send True/False to Arduino and update DOOR_STATE."""
         if not self.connected:
             print("Arduino not connected")
             return
 
-        if SERIAL_AVAILABLE and self.ser and self.ser.is_open:
-            command = "1" if state else "0"
-            self.ser.write(command.encode())
-            print(f"→ Arduino: {state} ({command}) - Servo to {180 if state else 0}°")
-            
-            # Try to read response
-            try:
-                time.sleep(0.1)
-                if self.ser.in_waiting > 0:
-                    response = self.ser.readline().decode().strip()
-                    if response:
-                        print(f"← Arduino: {response}")
-                DOOR_STATE.set(state)
-            except:
-                pass
-        else:
-            # Simulation mode
-            DOOR_STATE.set(state)
-            print(f"[SIM] → Arduino: {state} ({command}) - Servo to {180 if state else 0}°")
+        cmd = "1" if state else "0"
 
-        CURRENT_STATE = command
+        # Simulation or no serial
+        if (not SERIAL_AVAILABLE) or (self.ser is None) or (not self.ser.is_open):
+            print(f"[SIM] → Arduino: {state} ({cmd}) - Servo to {180 if state else 0}°")
+            DOOR_STATE.set(state)
+            return
+
+        try:
+            self.ser.write(cmd.encode())
+            print(f"→ Arduino: {state} ({cmd}) - Servo to {180 if state else 0}°")
+            time.sleep(0.05)
+            if self.ser.in_waiting > 0:
+                resp = self.ser.readline().decode(errors="ignore").strip()
+                if resp:
+                    print(f"← Arduino: {resp}")
+            DOOR_STATE.set(state)
+        except Exception as e:
+            print("Serial write failed:", e)
     
     def set_state(self, state):
         """Set Arduino to specific state (for voice commands)"""
@@ -174,6 +172,36 @@ class VoiceController:
 
         if VOSK_AVAILABLE and VOICE_ENABLED:
             self._initialize_vosk()
+
+    def start(self):
+        """Start voice recognition + volume meter."""
+        if not (VOSK_AVAILABLE and VOICE_ENABLED and self.recognizer):
+            print("Voice recognition not available (missing Vosk/model or VOICE_ENABLED=0)")
+            return False
+        try:
+            self.running = True
+            self.audio_stream = sd.RawInputStream(
+                samplerate=VOICE_SAMPLE_RATE,
+                blocksize=8000,       # adjust for latency vs CPU
+                dtype="int16",
+                channels=1,
+                callback=self._audio_callback,
+            )
+            self.audio_stream.start()
+            self.voice_thread = threading.Thread(target=self._process_audio, daemon=True)
+            self.voice_thread.start()
+            print("🎤 Voice recognition started — say 'on' / 'off' / 'turn on' / 'turn off'")
+            return True
+        except Exception as e:
+            print(f"Error starting voice recognition: {e}")
+            self.running = False
+            try:
+                if self.audio_stream:
+                    self.audio_stream.stop()
+                    self.audio_stream.close()
+            except Exception:
+                pass
+            return False
 
     def _initialize_vosk(self):
         """Initialize Vosk model and recognizer."""
