@@ -41,7 +41,7 @@ SHOW_WINDOW = os.environ.get("SHOW_WINDOW", "0") == "1"
 
 # Voice recognition configuration
 VOICE_SAMPLE_RATE = 16000
-VOICE_MODEL_PATH = os.environ.get("VOICE_MODEL_PATH", "vosk-model-en-us-0.22-lgraph")
+VOICE_MODEL_PATH = os.environ.get("VOICE_MODEL_PATH", "vosk-model-small-en-us-0.15")
 VOICE_ENABLED = os.environ.get("VOICE_ENABLED", "1") == "1"
 
 # Mic level SSE rate
@@ -283,10 +283,10 @@ class VoiceController:
                             self._last_final_ts = now
 
                             # Commands
-                            if text == "on" or "turn on" in text or text.endswith(" on"):
+                            if text == "turn on":
                                 print(">>> Voice Command: ON <<<")
                                 self.arduino.send_lights(True)
-                            elif text == "off" or "turn off" in text or text.endswith(" off"):
+                            elif text == "turn off":
                                 print(">>> Voice Command: OFF <<<")
                                 self.arduino.send_lights(False)
 
