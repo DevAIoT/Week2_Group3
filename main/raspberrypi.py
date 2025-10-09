@@ -250,6 +250,7 @@ class VoiceController:
     def _process_audio(self):
         """Consume mic buffers, run Vosk, print throttled partials/finals, and trigger Arduino commands."""
         LOUDNESS_THRESHOLD = 0.015
+        CONFIDENCE_THRESHOLD = 0.7
         
         while self.running:
             try:
@@ -270,25 +271,31 @@ class VoiceController:
                 if self.recognizer and self.recognizer.AcceptWaveform(data):
                     result = json.loads(self.recognizer.Result())
                     text = (result.get("text") or "").strip().lower()
+                    words = result.get("result", [])
+
+                    avg_conf = None
+                    if words:
+                        avg_conf = sum(w.get("conf", 0.0) for w in words) / len(words)
 
                     # Throttle finals + ignore dupes/short noise
                     if text:
-                        if (now - self._last_final_ts) >= self.THROTTLE_FINAL_SEC and (
-                            text != self._last_final_text
-                            and (len(text) >= self.MIN_FINAL_CHARS)
-                            and (len(text.split()) >= self.MIN_FINAL_WORDS)
-                        ):
-                            print(f"\n🎤 Final recognized: '{text}'")
-                            self._last_final_text = text
-                            self._last_final_ts = now
+                        if avg_conf is None or avg_conf >= CONFIDENCE_THRESHOLD:
+                            if (now - self._last_final_ts) >= self.THROTTLE_FINAL_SEC and (
+                                text != self._last_final_text
+                                and (len(text) >= self.MIN_FINAL_CHARS)
+                                and (len(text.split()) >= self.MIN_FINAL_WORDS)
+                            ):
+                                print(f"\n🎤 Final recognized: '{text}'")
+                                self._last_final_text = text
+                                self._last_final_ts = now
 
-                            # Commands
-                            if text == "turn on":
-                                print(">>> Voice Command: ON <<<")
-                                self.arduino.send_lights(True)
-                            elif text == "turn off":
-                                print(">>> Voice Command: OFF <<<")
-                                self.arduino.send_lights(False)
+                                # Commands
+                                if text == "turn on":
+                                    print(">>> Voice Command: ON <<<")
+                                    self.arduino.send_lights(True)
+                                elif text == "turn off":
+                                    print(">>> Voice Command: OFF <<<")
+                                    self.arduino.send_lights(False)
 
                     # Reset partial state after a final
                     self._last_partial_text = ""
