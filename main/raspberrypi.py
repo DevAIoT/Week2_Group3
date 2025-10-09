@@ -220,7 +220,7 @@ class VoiceController:
                 print(f"Vosk model not found at {VOICE_MODEL_PATH} — voice disabled.")
                 return False
             model = vosk.Model(VOICE_MODEL_PATH)
-            grammar = ["turn on", "turn off"]
+            grammar = '["turn on", "turn off"]'
             self.recognizer = vosk.KaldiRecognizer(model, VOICE_SAMPLE_RATE, grammar)
             self.recognizer.SetWords(True)
             print(f"Voice recognition initialized with model: {VOICE_MODEL_PATH}")
