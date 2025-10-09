@@ -130,11 +130,11 @@ class ArduinoController:
 
     # === LIGHTS (VOICE) ===
     def send_lights(self, on: bool):
-        """Control lights via voice commands: ON_LIGHTS / OFF_LIGHTS."""
+        """Control lights via voice commands only (no door state changes)."""
         if not self.connected:
             print("Arduino not connected (lights)")
             return
-        cmd = "LIGHT_ON" if on else "LIGHT_OFF"
+        cmd = "ON_LIGHTS" if on else "OFF_LIGHTS"   # <-- required commands
         if (not SERIAL_AVAILABLE) or (self.ser is None) or (not self.ser.is_open):
             print(f"[SIM] → LIGHTS: {cmd}")
             return
@@ -427,7 +427,6 @@ class HandDetector:
             if current_time - self.last_trigger_time > self.debounce_delay:
                 self.current_toggle_state = not self.current_toggle_state
                 self.arduino.send_servo(self.current_toggle_state)
-                DOOR_STATE.set(self.current_toggle_state)
                 self.last_trigger_time = current_time
                 print(f"🖐️  Hand opened - Toggle to: {self.current_toggle_state}")
         
