@@ -168,7 +168,7 @@ void controlLight(bool state) {
   
   Serial.println("Light control complete: " + stateStr);
 }
-}
+
 
 /*
   SerialEvent occurs whenever new data comes in the hardware serial RX.
