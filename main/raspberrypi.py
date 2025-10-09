@@ -1,9 +1,11 @@
 """
-Combined Hand Detection and Arduino Control
-Detects hand open/closed state using MediaPipe and sends toggle commands to Arduino
+Combined Hand Detection, Voice Commands, and Arduino Control
+Detects hand open/closed state using MediaPipe and voice commands using Vosk, 
+sends toggle commands to Arduino
 - Open hand: Sends toggle command to Arduino (alternates between True/False)
 - Closed hand: No action (idle state)
-- Each hand opening triggers a toggle
+- Voice commands: "on", "off", "turn on", "turn off"
+- Each hand opening or voice command triggers Arduino control
 """
 import os
 import threading
@@ -11,8 +13,23 @@ import cv2
 import mediapipe as mp
 import math
 import time
+import queue
+import json
+import sys
+import numpy as np
 from datetime import datetime
 from flask import Flask, Response
+
+# Voice recognition imports (with fallback)
+try:
+    import vosk
+    import sounddevice as sd
+    VOSK_AVAILABLE = True
+    print("Vosk voice recognition loaded successfully")
+except ImportError:
+    print("Warning: Vosk not available. Voice commands disabled.")
+    print("Install with: pip install vosk sounddevice")
+    VOSK_AVAILABLE = False
 
 CAMERA_INDEX = int(os.environ.get("CAMERA_INDEX", "0"))
 FRAME_W = int(os.environ.get("FRAME_W", "320"))
@@ -21,6 +38,14 @@ TARGET_FPS = float(os.environ.get("TARGET_FPS", "20"))
 ARDUINO_PORT = os.environ.get("ARDUINO_PORT", "/dev/ttyACM0")
 ARDUINO_BAUD = int(os.environ.get("ARDUINO_BAUD", "9600"))
 SHOW_WINDOW = os.environ.get("SHOW_WINDOW", "0") == "1"
+
+# Voice recognition configuration
+VOICE_SAMPLE_RATE = 16000
+VOICE_MODEL_PATH = os.environ.get("VOICE_MODEL_PATH", "vosk-model-small-en-us-0.15")
+VOICE_ENABLED = os.environ.get("VOICE_ENABLED", "1") == "1"
+
+# Mic level SSE rate
+UPDATE_HZ = float(os.environ.get("AUDIO_HZ", "20"))  # times per second
 
 class DoorState:
     def __init__(self):
@@ -57,23 +82,20 @@ def get_capture(src: int, width: int, height: int) -> cv2.VideoCapture:
 
 class ArduinoController:
     def __init__(self, port='/dev/ttyACM0', baudrate=9600, timeout=1):
-        """Initialize Arduino controller for Raspberry Pi"""
         self.port = port
         self.baudrate = baudrate
         self.timeout = timeout
         self.ser = None
         self.connected = False
-        
+
     def connect(self):
-        """Establish serial connection with Arduino"""
         if not SERIAL_AVAILABLE:
             print("Serial not available - running in simulation mode")
             self.connected = True
             return True
-            
         try:
             self.ser = serial.Serial(self.port, self.baudrate, timeout=self.timeout)
-            time.sleep(2)  # Give Arduino time to reset after connection
+            time.sleep(2)
             print(f"✓ Connected to Arduino on {self.port}")
             self.connected = True
             return True
@@ -82,40 +104,232 @@ class ArduinoController:
             print("Available ports to try: /dev/ttyUSB0, /dev/ttyACM0")
             self.connected = False
             return False
-    
-    def send_command(self, state):
-        """Send True/False command to Arduino"""
+
+    # === DOOR / SERVO ===
+    def send_servo(self, unlocked: bool):
+        """Control the door servo (hand gestures). Updates DOOR_STATE."""
         if not self.connected:
-            print("Arduino not connected")
+            print("Arduino not connected (servo)")
             return
+        cmd = "1" if unlocked else "0"  # your existing firmware mapping for servo
+        if (not SERIAL_AVAILABLE) or (self.ser is None) or (not self.ser.is_open):
+            print(f"[SIM] → SERVO: {'UNLOCK' if unlocked else 'LOCK'} ({cmd})")
+            DOOR_STATE.set(unlocked)
+            return
+        try:
+            self.ser.write((cmd + "\n").encode())
+            print(f"→ SERVO: {'UNLOCK' if unlocked else 'LOCK'} ({cmd})")
+            time.sleep(0.05)
+            if self.ser.in_waiting > 0:
+                resp = self.ser.readline().decode(errors="ignore").strip()
+                if resp:
+                    print(f"← Arduino: {resp}")
+            DOOR_STATE.set(unlocked)
+        except Exception as e:
+            print("Serial write failed (servo):", e)
 
-        if SERIAL_AVAILABLE and self.ser and self.ser.is_open:
-            command = "1" if state else "0"
-            self.ser.write(command.encode())
-            print(f"→ Arduino: {state} ({command}) - Servo to {180 if state else 0}°")
-            
-            # Try to read response
-            try:
-                time.sleep(0.1)
-                if self.ser.in_waiting > 0:
-                    response = self.ser.readline().decode().strip()
-                    if response:
-                        print(f"← Arduino: {response}")
-                DOOR_STATE.set(state)
-            except:
-                pass
-        else:
-            # Simulation mode
-            DOOR_STATE.set(state)
-            print(f"[SIM] → Arduino: {state} ({command}) - Servo to {180 if state else 0}°")
+    # === LIGHTS (VOICE) ===
+    def send_lights(self, on: bool):
+        """Control lights via voice commands only (no door state changes)."""
+        if not self.connected:
+            print("Arduino not connected (lights)")
+            return
+        cmd = "turn_on" if on else "turn_off"
+        if (not SERIAL_AVAILABLE) or (self.ser is None) or (not self.ser.is_open):
+            print(f"[SIM] → LIGHTS: {cmd}")
+            return
+        try:
+            self.ser.write((cmd + "\n").encode())
+            print(f"→ LIGHTS: {cmd}")
+            time.sleep(0.05)
+            if self.ser.in_waiting > 0:
+                resp = self.ser.readline().decode(errors="ignore").strip()
+                if resp:
+                    print(f"← Arduino: {resp}")
+        except Exception as e:
+            print("Serial write failed (lights):", e)
 
-        CURRENT_STATE = command
-    
     def disconnect(self):
-        """Close serial connection"""
         if SERIAL_AVAILABLE and self.ser and self.ser.is_open:
             self.ser.close()
         print("Arduino disconnected")
+
+def _to_dbfs(rms: float) -> float:
+    rms = max(rms, 1e-12)
+    return 20.0 * math.log10(rms)
+
+_level_lock = threading.Lock()
+_last_level = {"rms": 0.0, "peak": 0.0, "dbfs": -120.0, "level": 0.0}
+class VoiceController:
+    def __init__(self, arduino_controller):
+        """Initialize voice recognition controller + shared mic level metrics."""
+        self.arduino = arduino_controller
+        self.running = False
+        self.audio_queue: "queue.Queue[bytes|None]" = queue.Queue()
+        self.recognizer = None
+        self.voice_thread: threading.Thread | None = None
+        self.audio_stream = None
+
+        self.THROTTLE_PARTIAL_SEC = 0.5  # print partials at most twice per second
+        self.THROTTLE_FINAL_SEC   = 0.3  # minimal gap between finals (safety)
+        self.MIN_FINAL_WORDS      = 1    # ignore super-short finals (bump to 2/3 if you want)
+        self.MIN_FINAL_CHARS      = 3
+
+        self._last_partial_text = ""
+        self._last_partial_ts   = 0.0
+        self._last_final_text   = ""
+        self._last_final_ts     = 0.0
+
+        if VOSK_AVAILABLE and VOICE_ENABLED:
+            self._initialize_vosk()
+
+    def start(self):
+        """Start voice recognition + volume meter."""
+        if not (VOSK_AVAILABLE and VOICE_ENABLED and self.recognizer):
+            print("Voice recognition not available (missing Vosk/model or VOICE_ENABLED=0)")
+            return False
+        try:
+            self.running = True
+            self.audio_stream = sd.RawInputStream(
+                samplerate=VOICE_SAMPLE_RATE,
+                blocksize=8000,       # adjust for latency vs CPU
+                dtype="int16",
+                channels=1,
+                callback=self._audio_callback,
+            )
+            self.audio_stream.start()
+            self.voice_thread = threading.Thread(target=self._process_audio, daemon=True)
+            self.voice_thread.start()
+            print("🎤 Voice recognition started — say 'on' / 'off' / 'turn on' / 'turn off'")
+            return True
+        except Exception as e:
+            print(f"Error starting voice recognition: {e}")
+            self.running = False
+            try:
+                if self.audio_stream:
+                    self.audio_stream.stop()
+                    self.audio_stream.close()
+            except Exception:
+                pass
+            return False
+
+    def _initialize_vosk(self):
+        """Initialize Vosk model and recognizer."""
+        try:
+            if not os.path.exists(VOICE_MODEL_PATH):
+                print(f"Vosk model not found at {VOICE_MODEL_PATH} — voice disabled.")
+                return False
+            model = vosk.Model(VOICE_MODEL_PATH)
+            grammar = '["turn on", "turn off"]'
+            self.recognizer = vosk.KaldiRecognizer(model, VOICE_SAMPLE_RATE, grammar)
+            self.recognizer.SetWords(True)
+            print(f"Voice recognition initialized with model: {VOICE_MODEL_PATH}")
+            return True
+        except Exception as e:
+            print(f"Error loading Vosk model: {e}")
+            return False
+
+    def _audio_callback(self, indata, frames, time_info, status):
+        if status:
+            print(f"Audio status: {status}", file=sys.stderr)
+        # queue raw bytes for STT
+        self.audio_queue.put(bytes(indata))
+        # compute level metrics here (no extra stream)
+        try:
+            x = np.frombuffer(indata, dtype=np.int16).astype(np.float32) / 32768.0
+            if x.size:
+                peak = float(np.max(np.abs(x)))
+                rms = float(np.sqrt(np.mean(x**2)))
+                dbfs = float(_to_dbfs(rms))
+                level = float(min(1.0, max(0.0, rms * 3.0)))  # adjust gain factor as needed
+                with _level_lock:
+                    _last_level.update({"rms": rms, "peak": peak, "dbfs": dbfs, "level": level})
+        except Exception:
+            pass
+
+    def _process_audio(self):
+        """Consume mic buffers, run Vosk, print throttled partials/finals, and trigger Arduino commands."""
+        LOUDNESS_THRESHOLD = 0.015
+        CONFIDENCE_THRESHOLD = 0.7
+        
+        while self.running:
+            try:
+                data = self.audio_queue.get(timeout=1.0)
+                if data is None:
+                    break
+
+                # Check current loudness
+                with _level_lock:
+                    loud_enough = _last_level["rms"] > LOUDNESS_THRESHOLD
+
+                if not loud_enough:
+                    # too quiet — skip processing this buffer
+                    continue
+                
+                now = time.time()
+
+                if self.recognizer and self.recognizer.AcceptWaveform(data):
+                    result = json.loads(self.recognizer.Result())
+                    text = (result.get("text") or "").strip().lower()
+                    words = result.get("result", [])
+
+                    avg_conf = None
+                    if words:
+                        avg_conf = sum(w.get("conf", 0.0) for w in words) / len(words)
+
+                    # Throttle finals + ignore dupes/short noise
+                    if text:
+                        if avg_conf is None or avg_conf >= CONFIDENCE_THRESHOLD:
+                            if (now - self._last_final_ts) >= self.THROTTLE_FINAL_SEC and (
+                                text != self._last_final_text
+                                and (len(text) >= self.MIN_FINAL_CHARS)
+                                and (len(text.split()) >= self.MIN_FINAL_WORDS)
+                            ):
+                                print(f"\n🎤 Final recognized: '{text}'")
+                                self._last_final_text = text
+                                self._last_final_ts = now
+
+                                # Commands
+                                if text == "turn on":
+                                    print(">>> Voice Command: ON <<<")
+                                    self.arduino.send_lights(True)
+                                elif text == "turn off":
+                                    print(">>> Voice Command: OFF <<<")
+                                    self.arduino.send_lights(False)
+
+                    # Reset partial state after a final
+                    self._last_partial_text = ""
+                    self._last_partial_ts = now
+
+                else:
+                    # Throttled partials (only when changed AND enough time passed)
+                    if self.recognizer:
+                        partial = json.loads(self.recognizer.PartialResult())
+                        partial_text = (partial.get("partial") or "").strip()
+                        if partial_text and partial_text != self._last_partial_text:
+                            if (now - self._last_partial_ts) >= self.THROTTLE_PARTIAL_SEC:
+                                print(f"🎙️ Listening: {partial_text}...", end="\r", flush=True)
+                                self._last_partial_text = partial_text
+                                self._last_partial_ts = now
+
+            except queue.Empty:
+                continue
+            except Exception as e:
+                print(f"Voice processing error: {e}")
+
+    def stop(self):
+        """Stop voice recognition cleanly."""
+        self.running = False
+        if self.audio_stream:
+            try:
+                self.audio_stream.stop()
+                self.audio_stream.close()
+            except Exception:
+                pass
+        if self.voice_thread:
+            self.audio_queue.put(None)  # unblock
+            self.voice_thread.join(timeout=2.0)
+        print("🎤 Voice recognition stopped")
 
 class HandDetector:
     def __init__(self, arduino_controller):
@@ -220,8 +434,7 @@ class HandDetector:
             # Hand just opened - trigger toggle if enough time has passed
             if current_time - self.last_trigger_time > self.debounce_delay:
                 self.current_toggle_state = not self.current_toggle_state
-                self.arduino.send_command(self.current_toggle_state)
-                DOOR_STATE.set(self.current_toggle_state)
+                self.arduino.send_servo(self.current_toggle_state)
                 self.last_trigger_time = current_time
                 print(f"🖐️  Hand opened - Toggle to: {self.current_toggle_state}")
         
@@ -281,6 +494,23 @@ def status():
         mimetype="application/json"
     )
 
+@app.route("/audio/level")
+def audio_level():
+    def gen():
+        period = 1.0 / max(UPDATE_HZ, 1)
+        while True:
+            with _level_lock:
+                lvl = dict(_last_level)
+            yield f"data: {json.dumps(lvl)}\n\n"
+            time.sleep(period)
+    headers = {
+        "Content-Type": "text/event-stream",
+        "Cache-Control": "no-cache",
+        "Connection": "keep-alive",
+        "Access-Control-Allow-Origin": "*",
+    }
+    return Response(gen(), headers=headers)
+
 def start_stream_server():
     t = threading.Thread(
         target=lambda: app.run(host="0.0.0.0", port=5000, debug=False, threaded=True),
@@ -293,13 +523,17 @@ def start_stream_server():
 # Main loop
 # -----------------------------
 def main():
-    print("Hand Detection + Arduino Control + MJPEG Stream")
-    print("=" * 54)
+    print("Hand Detection + Voice Commands + Arduino Control + MJPEG Stream")
+    print("=" * 64)
 
     # Arduino
     arduino = ArduinoController()
     if not arduino.connect():
         print("Warning: continuing without Arduino connection")
+
+    # Voice Controller
+    voice_controller = VoiceController(arduino)
+    voice_started = voice_controller.start()
 
     # Camera
     try:
@@ -316,52 +550,42 @@ def main():
     start_stream_server()
 
     print("\nSystem ready!")
-    print("- Open your hand: toggles Arduino state (True ↔ False)")
-    print("- Closed hand: idle")
-    print("- Stream at: http://<pi-ip>:5000/stream")
+    if voice_started:
+        print("- Voice cmds: 'on' / 'off' / 'turn on' / 'turn off'")
+    print("- Video:   http://<pi-ip>:5000/stream")
+    print("- Mic SSE: http://<pi-ip>:5000/audio/level")
+    print("- Status:  http://<pi-ip>:5000/status")
     if SHOW_WINDOW:
         print("- Local preview window enabled (SHOW_WINDOW=1)")
-    print("- Press Ctrl+C to quit")
-    print("-" * 54)
+    print("- Ctrl+C to quit")
+    print("-" * 60)
 
-    # Loop & publish frames
     frame_interval = 1.0 / max(TARGET_FPS, 1)
     try:
         last_time = 0.0
         while True:
             ok, frame = cap.read()
             if not ok:
-                print("Failed to read from camera")
+                print("Camera read failed")
                 break
-
-            # Mirror view
             frame = cv2.flip(frame, 1)
-
-            # Process
-            frame, hand_state = detector.detect_hand_and_control_arduino(frame)
-
-            # Encode once per loop (publish to stream)
+            frame, _ = detector.detect_hand_and_control_arduino(frame)
             ok, buf = cv2.imencode(".jpg", frame, [int(cv2.IMWRITE_JPEG_QUALITY), 80])
             if ok:
                 with _stream_lock:
                     global _latest_jpg
                     _latest_jpg = buf.tobytes()
-
-            # Optional local preview
             if SHOW_WINDOW:
-                cv2.imshow("Hand Detection + Arduino Control", frame)
+                cv2.imshow("Hand + Voice + Arduino", frame)
                 if cv2.waitKey(1) & 0xFF == ord('q'):
                     break
-
-            # Simple fps cap
             now = time.time()
             sleep_for = frame_interval - (now - last_time)
             if sleep_for > 0:
                 time.sleep(sleep_for)
             last_time = time.time()
-
     except KeyboardInterrupt:
-        print("\nInterrupted by user")
+        print("\nInterrupted")
     except Exception as e:
         print(f"\nError: {e}")
     finally:
@@ -369,8 +593,9 @@ def main():
         if SHOW_WINDOW:
             cv2.destroyAllWindows()
         detector.release()
+        voice_controller.stop()
         arduino.disconnect()
-        print("System shutdown complete!")
+        print("Shutdown complete")
 
 if __name__ == "__main__":
     main()

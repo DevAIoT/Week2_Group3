@@ -5,13 +5,38 @@ Detects hand open/closed state using MediaPipe and sends toggle commands to Ardu
 - Closed hand: No action (idle state)
 - Each hand opening triggers a toggle
 """
-
+import os
+import threading
 import cv2
 import mediapipe as mp
 import math
 import time
+from datetime import datetime
+from flask import Flask, Response
 
-# Try to import serial for Arduino communication
+CAMERA_INDEX = int(os.environ.get("CAMERA_INDEX", "0"))
+FRAME_W = int(os.environ.get("FRAME_W", "320"))
+FRAME_H = int(os.environ.get("FRAME_H", "240"))
+TARGET_FPS = float(os.environ.get("TARGET_FPS", "20"))
+ARDUINO_PORT = os.environ.get("ARDUINO_PORT", "/dev/ttyACM0")
+ARDUINO_BAUD = int(os.environ.get("ARDUINO_BAUD", "9600"))
+SHOW_WINDOW = os.environ.get("SHOW_WINDOW", "0") == "1"
+
+class DoorState:
+    def __init__(self):
+        self._lock = threading.Lock()
+        self._unlocked = False
+
+    def set(self, unlocked: bool):
+        with self._lock:
+            self._unlocked = bool(unlocked)
+
+    def get(self) -> bool:
+        with self._lock:
+            return self._unlocked
+
+DOOR_STATE = DoorState()
+
 try:
     import serial
     SERIAL_AVAILABLE = True
@@ -63,7 +88,7 @@ class ArduinoController:
         if not self.connected:
             print("Arduino not connected")
             return
-            
+
         if SERIAL_AVAILABLE and self.ser and self.ser.is_open:
             command = "1" if state else "0"
             self.ser.write(command.encode())
@@ -76,12 +101,15 @@ class ArduinoController:
                     response = self.ser.readline().decode().strip()
                     if response:
                         print(f"← Arduino: {response}")
+                DOOR_STATE.set(state)
             except:
                 pass
         else:
             # Simulation mode
-            command = "1" if state else "0"
+            DOOR_STATE.set(state)
             print(f"[SIM] → Arduino: {state} ({command}) - Servo to {180 if state else 0}°")
+
+        CURRENT_STATE = command
     
     def disconnect(self):
         """Close serial connection"""
@@ -193,6 +221,7 @@ class HandDetector:
             if current_time - self.last_trigger_time > self.debounce_delay:
                 self.current_toggle_state = not self.current_toggle_state
                 self.arduino.send_command(self.current_toggle_state)
+                DOOR_STATE.set(self.current_toggle_state)
                 self.last_trigger_time = current_time
                 print(f"🖐️  Hand opened - Toggle to: {self.current_toggle_state}")
         
@@ -222,80 +251,126 @@ class HandDetector:
     def release(self):
         """Release MediaPipe resources"""
         self.hands.close()
+# -----------------------------
+# MJPEG stream (Flask in thread)
+# -----------------------------
+app = Flask(__name__)
+_latest_jpg = None
+_stream_lock = threading.Lock()
 
+def _mjpeg_generator():
+    # Stream boundary must match content-type header boundary
+    while True:
+        with _stream_lock:
+            data = _latest_jpg
+        if data is not None:
+            yield (b'--frame\r\n'
+                   b'Content-Type: image/jpeg\r\n\r\n' + data + b'\r\n')
+        time.sleep(1.0 / max(TARGET_FPS, 1))
+
+@app.route("/stream")
+def stream():
+    return Response(_mjpeg_generator(),
+                    mimetype='multipart/x-mixed-replace; boundary=frame')
+
+@app.route("/status")
+def status():
+    unlocked = DOOR_STATE.get()
+    return Response(
+        f'{{"unlocked": {str(unlocked).lower()}, "state": "{ "UNLOCKED" if unlocked else "LOCKED" }"}}\n',
+        mimetype="application/json"
+    )
+
+def start_stream_server():
+    t = threading.Thread(
+        target=lambda: app.run(host="0.0.0.0", port=5000, debug=False, threaded=True),
+        daemon=True
+    )
+    t.start()
+    print("📡 MJPEG stream available at http://<pi-ip>:5000/stream")
+
+# -----------------------------
+# Main loop
+# -----------------------------
 def main():
-    """Main function for hand detection with Arduino control"""
-    print("Hand Detection + Arduino Control System")
-    print("=" * 45)
-    
-    # Configuration
-    CAMERA_INDEX = 0  # Raspberry Pi camera
-    WIDTH = 320       # Optimized for Pi
-    HEIGHT = 240
-    ARDUINO_PORT = '/dev/ttyACM0'  # Adjust as needed
-    
-    # Initialize Arduino controller
-    arduino = ArduinoController(port=ARDUINO_PORT)
-    
-    # Initialize camera
+    print("Hand Detection + Arduino Control + MJPEG Stream")
+    print("=" * 54)
+
+    # Arduino
+    arduino = ArduinoController()
+    if not arduino.connect():
+        print("Warning: continuing without Arduino connection")
+
+    # Camera
     try:
-        cap = get_capture(CAMERA_INDEX, WIDTH, HEIGHT)
-        print(f"✓ Camera initialized: {WIDTH}x{HEIGHT}")
+        cap = get_capture(CAMERA_INDEX, FRAME_W, FRAME_H)
+        print(f"✓ Camera initialized: {FRAME_W}x{FRAME_H}")
     except RuntimeError as e:
         print(f"✗ Camera error: {e}")
         return
-    
-    # Connect to Arduino
-    if not arduino.connect():
-        print("Warning: Continuing without Arduino connection")
-    
-    # Initialize hand detector with Arduino controller
-    detector = HandDetector(arduino)
-    
+
+    # Detector
+    detector = HandDetector(arduino_controller=arduino)
+
+    # Start MJPEG server
+    start_stream_server()
+
     print("\nSystem ready!")
-    print("Controls:")
-    print("- Open your hand: Toggle Arduino state (True ↔ False)")
-    print("- Close your hand: Idle (no action)")
-    print("- Press 'q' to quit")
-    print("-" * 45)
-    
+    print("- Open your hand: toggles Arduino state (True ↔ False)")
+    print("- Closed hand: idle")
+    print("- Stream at: http://<pi-ip>:5000/stream")
+    if SHOW_WINDOW:
+        print("- Local preview window enabled (SHOW_WINDOW=1)")
+    print("- Press Ctrl+C to quit")
+    print("-" * 54)
+
+    # Loop & publish frames
+    frame_interval = 1.0 / max(TARGET_FPS, 1)
     try:
+        last_time = 0.0
         while True:
-            success, frame = cap.read()
-            if not success:
+            ok, frame = cap.read()
+            if not ok:
                 print("Failed to read from camera")
                 break
-            
-            # Flip frame horizontally for mirror effect
+
+            # Mirror view
             frame = cv2.flip(frame, 1)
-            
-            # Detect hand and control Arduino
+
+            # Process
             frame, hand_state = detector.detect_hand_and_control_arduino(frame)
-            
-            # Print state to console (overwrite previous line)
-            arduino_state = "ON" if detector.current_toggle_state else "OFF"
-            print(f"Hand: {'OPEN' if hand_state else 'CLOSED'} | Arduino: {arduino_state} | Press 'q' to quit", end='\r')
-            
-            # Display the frame
-            cv2.imshow('Hand Detection + Arduino Control', frame)
-            
-            # Break loop on 'q' key press
-            if cv2.waitKey(1) & 0xFF == ord('q'):
-                break
-    
+
+            # Encode once per loop (publish to stream)
+            ok, buf = cv2.imencode(".jpg", frame, [int(cv2.IMWRITE_JPEG_QUALITY), 80])
+            if ok:
+                with _stream_lock:
+                    global _latest_jpg
+                    _latest_jpg = buf.tobytes()
+
+            # Optional local preview
+            if SHOW_WINDOW:
+                cv2.imshow("Hand Detection + Arduino Control", frame)
+                if cv2.waitKey(1) & 0xFF == ord('q'):
+                    break
+
+            # Simple fps cap
+            now = time.time()
+            sleep_for = frame_interval - (now - last_time)
+            if sleep_for > 0:
+                time.sleep(sleep_for)
+            last_time = time.time()
+
     except KeyboardInterrupt:
-        print("\nProgram interrupted by user")
-    
+        print("\nInterrupted by user")
     except Exception as e:
         print(f"\nError: {e}")
-    
     finally:
-        # Cleanup
         cap.release()
-        cv2.destroyAllWindows()
+        if SHOW_WINDOW:
+            cv2.destroyAllWindows()
         detector.release()
         arduino.disconnect()
-        print("\nSystem shutdown complete!")
+        print("System shutdown complete!")
 
 if __name__ == "__main__":
     main()
