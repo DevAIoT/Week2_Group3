@@ -1,0 +1,6 @@
+{
+  "/page": "app/page.js",
+  "/api/camera/route": "app/api/camera/route.js",
+  "/api/status/route": "app/api/status/route.js",
+  "/api/audio/level/route": "app/api/audio/level/route.js"
+}
